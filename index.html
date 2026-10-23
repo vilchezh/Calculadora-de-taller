@@ -3893,6 +3893,7 @@ function d3Draw(){
         });
       }
     }
+    }
   faces.sort((a, b) => a.pieceZ - b.pieceZ || a.z - b.z);
 
   for (const fc of faces){
@@ -4022,6 +4023,7 @@ function d3Draw(){
       line(c.a, c.b, c.txt);
     }
   }
+}
 
 /* rayo de pantalla al mundo (cámara ortográfica) */
 function d3Ray(mx, my){
@@ -4716,8 +4718,6 @@ function resetD3(){
   d3SelRender(); d3TelRender(); d3OutRender(); d3Status(); d3StatsRender(); d3Draw(); d3Save();
   flag("Diseño vaciado");
 }
-
-}
 function d3PrintExtras(){
   document.getElementById("printhead").innerHTML =
     "<h1>Diseño 3D — despiece</h1><div class='ph'><span><b>Acero y Escamas</b> · medidas en mm</span></div>";
@@ -5042,7 +5042,6 @@ document.getElementById("btnReset").addEventListener("click", () => activeTab ==
 document.getElementById("btnExport").addEventListener("click", exportJob);
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
 render();
-}
 </script>
 
 <footer class="cred noprint">

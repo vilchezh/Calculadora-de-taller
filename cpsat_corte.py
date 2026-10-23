@@ -84,7 +84,8 @@ def build_and_solve(BL, BW, pieces, max_boards, time_limit):
     pres = {}
     xs, ys = {}, {}
     orients = {}                      # (i, b) -> (o0, o1) o None si no rota
-    intervals = [[] for _ in range(nb)]
+    ix = [[] for _ in range(nb)]      # intervalos en X, por tablero
+    iy = [[] for _ in range(nb)]      # intervalos en Y, por tablero
 
     for i, (name, L, W, can_rot) in enumerate(pieces):
         for b in range(nb):
@@ -102,16 +103,16 @@ def build_and_solve(BL, BW, pieces, max_boards, time_limit):
                 model.Add(y + W <= BW).OnlyEnforceIf(o0)
                 model.Add(x + W <= BL).OnlyEnforceIf(o1)
                 model.Add(y + L <= BW).OnlyEnforceIf(o1)
-                intervals[b].append(model.NewOptionalIntervalVar(x, L, x + L, o0, f"ix_{i}_{b}"))
-                intervals[b].append(model.NewOptionalIntervalVar(y, W, y + W, o0, f"iy_{i}_{b}"))
-                intervals[b].append(model.NewOptionalIntervalVar(x, W, x + W, o1, f"jx_{i}_{b}"))
-                intervals[b].append(model.NewOptionalIntervalVar(y, L, y + L, o1, f"jy_{i}_{b}"))
+                ix[b].append(model.NewOptionalIntervalVar(x, L, x + L, o0, f"ix_{i}_{b}"))
+                iy[b].append(model.NewOptionalIntervalVar(y, W, y + W, o0, f"iy_{i}_{b}"))
+                ix[b].append(model.NewOptionalIntervalVar(x, W, x + W, o1, f"jx_{i}_{b}"))
+                iy[b].append(model.NewOptionalIntervalVar(y, L, y + L, o1, f"jy_{i}_{b}"))
                 orients[i, b] = (o0, o1)
             else:
                 x = model.NewIntVar(0, max(0, BL - L), f"x_{i}_{b}")
                 y = model.NewIntVar(0, max(0, BW - W), f"y_{i}_{b}")
-                intervals[b].append(model.NewOptionalIntervalVar(x, L, x + L, p_ib, f"ix_{i}_{b}"))
-                intervals[b].append(model.NewOptionalIntervalVar(y, W, y + W, p_ib, f"iy_{i}_{b}"))
+                ix[b].append(model.NewOptionalIntervalVar(x, L, x + L, p_ib, f"ix_{i}_{b}"))
+                iy[b].append(model.NewOptionalIntervalVar(y, W, y + W, p_ib, f"iy_{i}_{b}"))
                 orients[i, b] = None
             xs[i, b] = x
             ys[i, b] = y
@@ -119,8 +120,8 @@ def build_and_solve(BL, BW, pieces, max_boards, time_limit):
         model.Add(sum(pres[i, b] for b in range(nb)) == 1)   # cada pieza, un tablero
 
     for b in range(nb):
-        if intervals[b]:
-            model.AddNoOverlap(intervals[b])
+        if ix[b]:
+            model.AddNoOverlap2D(ix[b], iy[b])      # rectángulos (X, Y) sin superponerse
 
     model.Minimize(sum(used))
 
