@@ -1290,6 +1290,7 @@ svg text{font-family:var(--narrow)}
         </label>
         <div class="savebar" style="margin-top:8px">
           <button class="btn primary" id="d3BtnLoadAi" type="button">⚡ Cargar JSON IA y Costear</button>
+          <button class="btn primary" id="d3BtnExportGlb" type="button">📦 Descargar .GLB 3D</button>
         </div>
       </div>
     </section>
@@ -5028,7 +5029,66 @@ function d3ImportFromAI(){
   }catch(e){ flag("Error en JSON"); }
 }
 document.getElementById("d3BtnLoadAi")?.addEventListener("click", d3ImportFromAI);
-
+function d3ExportGLB(){
+  if(!d3.pieces.length){ flag("Agregá piezas primero"); return; }
+  const pos=[], nrm=[], idx=[], nodes=[], meshes=[];
+  let vOff=0;
+  d3.pieces.forEach((p,i)=>{
+    const sIdx=idx.length;
+    d3Boxes(p).forEach(b=>{
+      const C=[];
+      for(let j=0;j<8;j++){
+        const w=d3World(p,b.x+((j&1)?b.dx:0),b.y+((j&2)?b.dy:0),b.z+((j&4)?b.dz:0));
+        C.push([(w.x-d3.cam.tx)/1000, w.y/1000, (w.z-d3.cam.tz)/1000]);
+      }
+      [[[0,4,6,2],[-1,0,0]],[[1,3,7,5],[1,0,0]],[[0,1,5,4],[0,-1,0]],[[2,6,7,3],[0,1,0]],[[0,2,3,1],[0,0,-1]],[[4,5,7,6],[0,0,1]]].forEach(([f,n])=>{
+        f.forEach(k=>{ pos.push(...C[k]); nrm.push(...n); });
+        idx.push(vOff,vOff+1,vOff+2,vOff,vOff+2,vOff+3); vOff+=4;
+      });
+    });
+    if(idx.length>sIdx) meshes.push({name:p.name||("p"+i), start:sIdx, count:idx.length-sIdx, mat:p.kind==="madera"?0:1});
+  });
+  const pA=new Float32Array(pos), nA=new Float32Array(nrm), iA=new Uint32Array(idx);
+  let gMin=[Infinity,Infinity,Infinity], gMax=[-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<pos.length;i+=3) for(let j=0;j<3;j++){
+    gMin[j]=Math.min(gMin[j],pos[i+j]); gMax[j]=Math.max(gMax[j],pos[i+j]);
+  }
+  const acc=[
+    {bufferView:0,componentType:5126,count:pos.length/3,type:"VEC3",min:gMin,max:gMax},
+    {bufferView:1,componentType:5126,count:nrm.length/3,type:"VEC3"}
+  ];
+  const gMesh=meshes.map((m,i)=>{
+    acc.push({bufferView:2,byteOffset:m.start*4,componentType:5125,count:m.count,type:"SCALAR"});
+    nodes.push({name:m.name,mesh:i});
+    return {name:m.name,primitives:[{attributes:{POSITION:0,NORMAL:1},indices:i+2,material:m.mat}]};
+  });
+  const gltf={
+    asset:{version:"2.0"}, scene:0, scenes:[{nodes:nodes.map((_,i)=>i)}], nodes, meshes:gMesh,
+    materials:[
+      {pbrMetallicRoughness:{baseColorFactor:[0.85,0.75,0.6,1],roughnessFactor:0.8}},
+      {pbrMetallicRoughness:{baseColorFactor:[0.15,0.15,0.15,1],metallicFactor:0.8,roughnessFactor:0.4}}
+    ],
+    bufferViews:[
+      {buffer:0,byteOffset:0,byteLength:pA.byteLength,target:34962},
+      {buffer:0,byteOffset:pA.byteLength,byteLength:nA.byteLength,target:34962},
+      {buffer:0,byteOffset:pA.byteLength+nA.byteLength,byteLength:iA.byteLength,target:34963}
+    ],
+    accessors:acc, buffers:[{byteLength:pA.byteLength+nA.byteLength+iA.byteLength}]
+  };
+  const jB=new TextEncoder().encode(JSON.stringify(gltf));
+  const jPad=(4-(jB.byteLength%4))%4, bPad=(4-(gltf.buffers[0].byteLength%4))%4;
+  const out=new ArrayBuffer(28+jB.byteLength+jPad+gltf.buffers[0].byteLength+bPad);
+  const dv=new DataView(out), u8=new Uint8Array(out);
+  dv.setUint32(0,0x46546C67,true); dv.setUint32(4,2,true); dv.setUint32(8,out.byteLength,true);
+  dv.setUint32(12,jB.byteLength+jPad,true); dv.setUint32(16,0x4E4F534A,true);
+  u8.set(jB,20); for(let i=0;i<jPad;i++) u8[20+jB.byteLength+i]=0x20;
+  const bS=20+jB.byteLength+jPad;
+  dv.setUint32(bS,gltf.buffers[0].byteLength+bPad,true); dv.setUint32(bS+4,0x004E4942,true);
+  u8.set(new Uint8Array(pA.buffer),bS+8); u8.set(new Uint8Array(nA.buffer),bS+8+pA.byteLength); u8.set(new Uint8Array(iA.buffer),bS+8+pA.byteLength+nA.byteLength);
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([out],{type:"model/gltf-binary"}));
+  a.download="isla-industrial.glb"; a.click(); flag("GLB descargado");
+}
+document.getElementById("d3BtnExportGlb")?.addEventListener("click", d3ExportGLB);
 /* === FIN D3-4 === */
 
 /* =========================================================================
