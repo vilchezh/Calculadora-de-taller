@@ -1288,7 +1288,8 @@ svg text{font-family:var(--narrow)}
         <label><span class="lab">Pegar JSON generado por IA</span>
           <textarea id="d3AiJson" rows="4" style="width:100%;font-family:monospace;font-size:12px;padding:8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--field)" placeholder='{"name":"Isla Industrial 130x50x95","pieces":[...]}'></textarea>
         </label>
-        <div class="savebar" style="margin-top:8px">
+        <div id="d3ModToggles" class="chips" style="margin-top:10px"></div>
+        <div class="savebar" style="margin-top:8px;flex-wrap:wrap">
           <button class="btn primary" id="d3BtnLoadAi" type="button">⚡ Cargar JSON IA y Costear</button>
           <button class="btn primary" id="d3BtnExportGlb" type="button">📦 Descargar .GLB 3D</button>
         </div>
@@ -3857,6 +3858,7 @@ function d3Draw(){
   /* caras de las piezas, ordenadas del fondo hacia la cámara */
   const faces = [];
   for (const p of d3.pieces){
+    if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) continue;
     const base = D3_COLORS[p.kind] || D3_COLORS.madera;
     const boxes = d3Boxes(p);
     for (const b of boxes){
@@ -5017,23 +5019,25 @@ function d3Bind(){
   });
 }
 
-function d3ImportFromAI(){
-  try{
-    const d=JSON.parse(document.getElementById("d3AiJson").value);
-    d3.pieces=d.pieces.map(p=>Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:false},p));
-    if(d.name){ mat.name=d.name; document.getElementById("mName").value=d.name; }
-    d3SendCorte(); d3SendMat();
-    if(d.consumables) d.consumables.forEach(c=>mat.items.push(sanitizeMatItem(c)));
-    saveMat(); renderMat(); d3Fit(); d3Save(); d3SelRender(); d3OutRender(); d3Status(); d3Draw();
-    flag("Mueble cargado y costeado");
-  }catch(e){ flag("Error en JSON"); }
+function d3RenderModToggles(){
+  const box = document.getElementById("d3ModToggles");
+  if (!box) return;
+  const mods = [...new Set(d3.pieces.map(p => p.mod).filter(m => m && m !== "base"))];
+  if (!mods.length){ box.innerHTML = ""; return; }
+  d3.hideMods = d3.hideMods || {};
+  box.innerHTML = `<span class="lab" style="align-self:center;margin-right:6px">Módulos opcionales:</span>` +
+    mods.map(m => {
+      const vis = !d3.hideMods[m];
+      return `<button type="button" class="chip" data-mod="${esc(m)}" aria-pressed="${vis}">${vis ? "👁️ Visible: " : "🚫 Oculto: "}${esc(m)}</button>`;
+    }).join("");
 }
-document.getElementById("d3BtnLoadAi")?.addEventListener("click", d3ImportFromAI);
+
 function d3ExportGLB(){
   if(!d3.pieces.length){ flag("Agregá piezas primero"); return; }
   const pos=[], nrm=[], idx=[], nodes=[], meshes=[];
   let vOff=0;
   d3.pieces.forEach((p,i)=>{
+    if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) return;
     const sIdx=idx.length;
     d3Boxes(p).forEach(b=>{
       const C=[];
@@ -5088,7 +5092,53 @@ function d3ExportGLB(){
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([out],{type:"model/gltf-binary"}));
   a.download="isla-industrial.glb"; a.click(); flag("GLB descargado");
 }
+
+function d3RecalcAllFrom3D(){
+  // Limpia las listas antes de volcar para que NUNCA se dupliquen materiales al recargar o apagar módulos
+  state.pieces = [];
+  mat.items = [];
+  d3.pieces.forEach(p => {
+    const hidden = p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod];
+    p._sent = !!(p.hw || hidden);
+  });
+  d3SendCorte();
+  d3SendMat();
+  if (Array.isArray(d3.lastConsumables)){
+    d3.lastConsumables.forEach(c => {
+      if (c.mod && c.mod !== "base" && d3.hideMods && d3.hideMods[c.mod]) return;
+      mat.items.push(sanitizeMatItem(c));
+    });
+  }
+  save(); render(); saveMat(); renderMat();
+}
+
+function d3ImportFromAI(){
+  try{
+    const d=JSON.parse(document.getElementById("d3AiJson").value);
+    d3.hideMods = {};
+    d3.lastConsumables = Array.isArray(d.consumables) ? d.consumables : [];
+    d3.pieces=d.pieces.map(p=>Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:!!p.hw},p));
+    if(d.name){ mat.name=d.name; document.getElementById("mName").value=d.name; }
+    d3RecalcAllFrom3D();
+    d3RenderModToggles();
+    d3Fit(); d3Save(); d3SelRender(); d3OutRender(); d3Status(); d3Draw();
+    flag("Mueble cargado y costeado sin duplicados");
+  }catch(e){ flag("Error en JSON"); }
+}
+document.getElementById("d3BtnLoadAi")?.addEventListener("click", d3ImportFromAI);
 document.getElementById("d3BtnExportGlb")?.addEventListener("click", d3ExportGLB);
+document.getElementById("d3ModToggles")?.addEventListener("click", e => {
+  const b = e.target.closest("[data-mod]");
+  if (!b) return;
+  const m = b.dataset.mod;
+  d3.hideMods = d3.hideMods || {};
+  d3.hideMods[m] = !d3.hideMods[m];
+  d3RenderModToggles();
+  d3RecalcAllFrom3D();
+  d3OutRender(); d3StatsRender(); d3Draw();
+  flag((d3.hideMods[m] ? "Módulo oculto: " : "Módulo activo: ") + m);
+});
+
 /* === FIN D3-4 === */
 
 /* =========================================================================
