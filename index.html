@@ -3608,21 +3608,62 @@ function d3Save(){
     }catch(e){ /* sin almacenamiento: se sigue en memoria */ }
   }, 400);
 }
+function d3SanitizePiece(p){
+  if (!p || typeof p !== "object") return null;
+  if (!["madera", "perfil", "chapa", "plegada"].includes(p.kind)) return null;
+  const out = Object.assign({ id: p.id || uid(), x: 0, y: 0, z: 0, rot: 0, axis: "x", mod: "base", _sent: false }, p);
+  out.x = numOr(out.x, 0);
+  out.y = Math.max(0, numOr(out.y, 0));
+  out.z = numOr(out.z, 0);
+  out.rot = numOr(out.rot, 0);
+  if (!["x", "y", "z"].includes(out.axis)) out.axis = "x";
+  if (out.kind === "madera" || out.kind === "chapa"){
+    out.l = numOr(out.l, 500, 1);
+    out.w = numOr(out.w, 300, 1);
+    out.t = numOr(out.t, out.kind === "madera" ? 18 : 1.5, 0.3);
+  } else if (out.kind === "perfil"){
+    const pr = d3Prof(out.profId);
+    out.profId = pr.id;
+    out.wall = numOr(out.wall, 1.6, 0.5);
+    out.len = numOr(out.len, 500, 1);
+  } else if (out.kind === "plegada"){
+    if (!Array.isArray(out.segs) || !out.segs.length){
+      const tmpl = D3_TMPL[out.tmpl] ? out.tmpl : "L";
+      const dims = Array.isArray(out.dims) && out.dims.length >= 2 ? out.dims : [80, 40, 40];
+      const t = numOr(out.t, 1.2, 0.3, 4);
+      const L = numOr(out.L, 500, 1);
+      const r = numOr(out.r, t, 0);
+      const K = numOr(out.K, 0.4, 0, 1);
+      const res = d3Plegada(tmpl, dims, t, L, r, K);
+      out.segs = res.segs; out.devA = res.devA; out.devB = res.devB; out.bends = res.bends;
+    }
+  }
+  if (!out.name) out.name = d3DefaultName(out);
+  return out;
+}
+
 function d3Load(){
   try{
     const raw = localStorage.getItem(D3KEY);
     if (!raw) return;
     const s = JSON.parse(raw);
     const base = d3Defaults();
+    const rawPieces = Array.isArray(s.pieces) ? s.pieces : [];
+    const cleanPieces = rawPieces.map(d3SanitizePiece).filter(Boolean);
     d3 = Object.assign(base, s, {
       sel: null, mode: "mover", regla: null, angPts: [], snaps: [], marks: [],
-      pieces: Array.isArray(s.pieces) ? s.pieces.filter(p => p && p.id) : [],
+      pieces: cleanPieces,
       cotas: Array.isArray(s.cotas) ? s.cotas.slice(0, 40) : [],
       cat: s.cat && typeof s.cat === "object" ? s.cat : {},
       ple: Object.assign(base.ple, s.ple || {}),
       cam: Object.assign(base.cam, s.cam || {})
     });
-  }catch(e){ /* estado por defecto */ }
+    if (!isFinite(d3.cam.scale) || d3.cam.scale <= 0) d3.cam = base.cam;
+    if (cleanPieces.length !== rawPieces.length) d3Save();
+  }catch(e){
+    d3 = d3Defaults();
+    try{ localStorage.removeItem(D3KEY); }catch(err){}
+  }
 }
 
 /* catálogo: precio y largo de barra por perfil + pared */
@@ -3635,17 +3676,22 @@ function d3CatGet(pid, wall){
 
 /* --- dimensiones del AABB sin rotar (dx, dy, dz) --- */
 function d3Dims(p){
+  if (!p) return [10, 10, 10];
   if (p.kind === "madera" || p.kind === "chapa"){
-    return p.axis === "y" ? [p.t, p.l, p.w] : [p.l, p.t, p.w];
+    const l = +p.l || 100, w = +p.w || 100, t = +p.t || 18;
+    return p.axis === "y" ? [t, l, w] : [l, t, w];
   }
   if (p.kind === "perfil"){
     const pr = d3Prof(p.profId);
-    if (p.axis === "y") return [pr.a, p.len, pr.b];
-    if (p.axis === "z") return [pr.b, pr.a, p.len];
-    return [p.len, pr.a, pr.b];
+    const len = +p.len || 100;
+    if (p.axis === "y") return [pr.a, len, pr.b];
+    if (p.axis === "z") return [pr.b, pr.a, len];
+    return [len, pr.a, pr.b];
   }
-  let X = 0, Y = 0, Z = 0;
-  for (const s of p.segs){ X = Math.max(X, s.x + s.dx); Y = Math.max(Y, s.y + s.dy); Z = Math.max(Z, s.z + s.dz); }
+  let X = 10, Y = 10, Z = 10;
+  if (Array.isArray(p.segs)){
+    for (const s of p.segs){ X = Math.max(X, (s.x||0) + (s.dx||10)); Y = Math.max(Y, (s.y||0) + (s.dy||10)); Z = Math.max(Z, (s.z||0) + (s.dz||10)); }
+  }
   return [X, Y, Z];
 }
 
@@ -3675,7 +3721,7 @@ function d3AABB(p){
 
 /* cajas locales para el render */
 function d3Boxes(p){
-  if (p.kind === "plegada") return p.segs;
+  if (p && p.kind === "plegada" && Array.isArray(p.segs) && p.segs.length) return p.segs;
   const D = d3Dims(p);
   return [{ x:0, y:0, z:0, dx:D[0], dy:D[1], dz:D[2] }];
 }
@@ -3817,7 +3863,7 @@ function d3GridStep(S){
 
 function d3Draw(){
   if (!d3Resize()) return;
-  const W = d3cv.clientWidth, H = d3cv.clientHeight;
+  const W = d3cv.clientWidth || 800, H = d3cv.clientHeight || 500;
   const T = { x: d3.cam.tx, y: d3.cam.ty, z: d3.cam.tz };
   const { f, r, u } = d3CamVecs();
   const S = d3.cam.scale;
@@ -5114,16 +5160,28 @@ function d3RecalcAllFrom3D(){
 
 function d3ImportFromAI(){
   try{
-    const d=JSON.parse(document.getElementById("d3AiJson").value);
+    const d = JSON.parse(document.getElementById("d3AiJson").value);
     d3.hideMods = {};
-    d3.lastConsumables = Array.isArray(d.consumables) ? d.consumables : [];
-    d3.pieces=d.pieces.map(p=>Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:!!p.hw},p));
+    const extraCons = [];
+    const rawPieces = Array.isArray(d.pieces) ? d.pieces : [];
+    const validPieces = [];
+    for (const p of rawPieces){
+      if (!p || typeof p !== "object") continue;
+      if (p.kind === "directo" || p.kind === "consumible" || p.kind === "tablero" || p.kind === "barra"){
+        extraCons.push(p);
+        continue;
+      }
+      const clean = d3SanitizePiece(Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:!!p.hw}, p));
+      if (clean) validPieces.push(clean);
+    }
+    d3.lastConsumables = (Array.isArray(d.consumables) ? d.consumables : []).concat(extraCons);
+    d3.pieces = validPieces;
     if(d.name){ mat.name=d.name; document.getElementById("mName").value=d.name; }
     d3RecalcAllFrom3D();
     d3RenderModToggles();
     d3Fit(); d3Save(); d3SelRender(); d3OutRender(); d3Status(); d3Draw();
-    flag("Mueble cargado y costeado sin duplicados");
-  }catch(e){ flag("Error en JSON"); }
+    flag("Mueble cargado: " + validPieces.length + " piezas 3D en escena");
+  }catch(e){ flag("Error en JSON: verificá que esté completo"); }
 }
 document.getElementById("d3BtnLoadAi")?.addEventListener("click", d3ImportFromAI);
 document.getElementById("d3BtnExportGlb")?.addEventListener("click", d3ExportGLB);
@@ -5164,16 +5222,15 @@ qLoad();
 qFillForm();
 bindQuote();
 renderQBook();
-d3Init();
-
-try{ activeTab = localStorage.getItem(TABKEY) || "corte"; }catch(e){ activeTab = "corte"; }
-applyTab(activeTab);
-
 TABS.forEach(([btn, name]) => document.getElementById(btn).addEventListener("click", () => setTab(name)));
 document.getElementById("btnDemo").addEventListener("click", () => activeTab === "d3" ? loadDemo3D() : activeTab === "mat" ? loadMatDemo() : loadDemo());
 document.getElementById("btnReset").addEventListener("click", () => activeTab === "d3" ? resetD3() : activeTab === "mat" ? resetMat() : reset());
 document.getElementById("btnExport").addEventListener("click", exportJob);
 document.getElementById("btnPrint").addEventListener("click", () => window.print());
+
+try{ d3Init(); }catch(e){ console.error(e); }
+try{ activeTab = localStorage.getItem(TABKEY) || "corte"; }catch(e){ activeTab = "corte"; }
+try{ applyTab(activeTab); }catch(e){ applyTab("corte"); }
 render();
 </script>
 
