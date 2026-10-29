@@ -1157,10 +1157,13 @@ svg text{font-family:var(--narrow)}
 
         <div id="d3cBox" hidden>
           <div class="grid g2">
+            <label><span class="lab">Nombre</span><input type="text" id="d3cName" placeholder="Malla, estante chapa…" autocomplete="off"></label>
+            <label><span class="lab">Puesta</span>
+              <select id="d3cAxis"><option value="x">Acostada (horizontal)</option><option value="y">Parada (vertical)</option></select></label>
             <label><span class="lab">Largo (mm)</span><input type="number" id="d3cL" min="1" step="1" inputmode="numeric" value="500"></label>
             <label><span class="lab">Ancho (mm)</span><input type="number" id="d3cW" min="1" step="1" inputmode="numeric" value="300"></label>
-            <label><span class="lab">Espesor / calibre (mm)</span><input type="number" id="d3cT" min="0.3" max="4" step="0.01" inputmode="decimal" value="1.2"></label>
-            <span></span>
+            <label><span class="lab">Espesor / calibre (mm)</span><input type="number" id="d3cT" min="0.3" max="10" step="0.1" inputmode="decimal" value="1.5"></label>
+            <label class="check" style="align-self:end"><input type="checkbox" id="d3cMesh"><span>Es malla desplegada 3D</span></label>
           </div>
         </div>
 
@@ -3620,7 +3623,7 @@ function d3SanitizePiece(p){
   out.rx = numOr(out.rx, 0);
   out.rz = numOr(out.rz, 0);
   out.hw = !!out.hw;
-  out.mesh = !!(out.mesh || /malla|despleg/i.test(String(out.name || "")));
+  out.mesh = (out.kind === "chapa") ? !!out.mesh : false;
   if (!["x", "y", "z"].includes(out.axis)) out.axis = "x";
   if (out.kind === "madera" || out.kind === "chapa"){
     out.l = numOr(out.l, 500, 1);
@@ -4583,15 +4586,20 @@ function d3SelRender(){
     info = `${pr.name} ×${p.wall} · ${mmv(p.len)} mm · ${f2.format(d3Kgm(pr.a, pr.b, p.wall))} kg/m`;
   }
   else info = `${D3_TMPL[p.tmpl] ? D3_TMPL[p.tmpl].label : p.tmpl} ${p.t} mm · desarrollo ${mmv(p.devA)}×${mmv(p.devB)} · ${p.bends} dobleces`;
-  const axisCtl = p.kind === "madera"
+  const axisCtl = (p.kind === "madera" || p.kind === "chapa")
     ? '<select data-s="axis"><option value="x">Acostada</option><option value="y">Parada</option></select>'
     : p.kind === "perfil"
     ? '<select data-s="axis"><option value="y">Vertical</option><option value="x">Horizontal X</option><option value="z">Horizontal Z</option></select>'
     : '<input type="text" value="—" readonly tabindex="-1" style="background:var(--panel-2)">';
-  const lenCtl = p.kind === "madera" || p.kind === "perfil"
+  const lenCtl = (p.kind === "madera" || p.kind === "chapa" || p.kind === "perfil")
     ? `<div class="grid g2" style="margin-top:8px">
-         <label><span class="lab">Largo (mm)</span><input type="number" data-s="len" step="1" inputmode="numeric" value="${p.kind === "madera" ? p.l : p.len}"></label>
-         ${p.kind === "madera" ? `<label><span class="lab">Ancho (mm)</span><input type="number" data-s="w" step="1" inputmode="numeric" value="${p.w}"></label>` : "<span></span>"}
+         <label><span class="lab">Largo (mm)</span><input type="number" data-s="len" step="1" inputmode="numeric" value="${p.kind === "perfil" ? p.len : p.l}"></label>
+         ${(p.kind === "madera" || p.kind === "chapa") ? `<label><span class="lab">Ancho (mm)</span><input type="number" data-s="w" step="1" inputmode="numeric" value="${p.w}"></label>` : "<span></span>"}
+       </div>` : "";
+  const meshCtl = p.kind === "chapa"
+    ? `<div style="margin-top:10px;padding:8px 10px;background:var(--accent-soft);border:1px solid var(--rule);border-radius:var(--r);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+         <span style="font-size:13.5px"><b>Vista 3D / GLB:</b> ${p.mesh ? "🕸️ Malla desplegada (calada)" : "🔲 Plano liso"}</span>
+         <button class="btn ${p.mesh ? "quiet" : "primary"}" data-n="toggle-mesh" type="button" style="padding:5px 10px;font-size:13px">${p.mesh ? "Pasar a plano liso" : "🕸️ Convertir en malla"}</button>
        </div>` : "";
   box.innerHTML = `
     <div class="grid g2">
@@ -4608,6 +4616,7 @@ function d3SelRender(){
       <label><span class="lab">Puesta</span>${axisCtl}</label>
     </div>
     ${lenCtl}
+    ${meshCtl}
     <div class="d3nudge">
       <button class="btn quiet" data-n="x-100" type="button">◀ 100</button>
       <button class="btn quiet" data-n="x-10" type="button">◀ 10</button>
@@ -4857,7 +4866,7 @@ function d3Init(){
   document.getElementById("d3PleMax").value = d3.ple.plegadora || "";
   document.getElementById("d3CizMax").value = d3.ple.cizalla || "";
   d3Bind();
-  d3SelRender(); d3TelRender(); d3OutRender(); d3Status(); d3StatsRender();
+  d3RenderModToggles(); d3SelRender(); d3TelRender(); d3OutRender(); d3Status(); d3StatsRender();
 }
 
 function d3Bind(){
@@ -4928,11 +4937,15 @@ function d3Bind(){
         axis: document.getElementById("d3pAxis").value
       });
     } else if (kind === "chapa"){
+      const isMesh = !!document.getElementById("d3cMesh").checked;
       p = d3NewPiece("chapa", {
+        name: document.getElementById("d3cName").value.trim() || (isMesh ? "Malla desplegada" : ""),
         l: numOr(document.getElementById("d3cL").value, 500, 1),
         w: numOr(document.getElementById("d3cW").value, 300, 1),
-        t: numOr(document.getElementById("d3cT").value, 1.2, 0.3, 4),
-        axis: "x"
+        t: numOr(document.getElementById("d3cT").value, 1.5, 0.3, 10),
+        axis: document.getElementById("d3cAxis").value || "x",
+        mesh: isMesh,
+        hw: isMesh
       });
     } else {
       const tmpl = document.getElementById("d3fTmpl").value;
@@ -5012,7 +5025,7 @@ function d3Bind(){
     }
     else if (f === "axis"){ p.axis = e.target.value; d3SelRender(); }
     else if (f === "len"){
-      if (p.kind === "madera") p.l = Math.max(1, Math.round(numOr(e.target.value, p.l, 1)));
+      if (p.kind === "madera" || p.kind === "chapa") p.l = Math.max(1, Math.round(numOr(e.target.value, p.l, 1)));
       else p.len = Math.max(1, Math.round(numOr(e.target.value, p.len, 1)));
     }
     else if (f === "w") p.w = Math.max(1, Math.round(numOr(e.target.value, p.w, 1)));
@@ -5031,6 +5044,10 @@ function d3Bind(){
     } else if (a === "del"){
       d3.pieces = d3.pieces.filter(q => q.id !== p.id);
       d3.sel = null;
+    } else if (a === "toggle-mesh" && p.kind === "chapa"){
+      p.mesh = !p.mesh;
+      d3RenderModToggles();
+      flag(p.mesh ? "Convertido en malla desplegada 3D" : "Convertido en plano liso");
     } else if (a === "piso"){ p.y = 0; }
     else if (a === "centrar"){
       const bb = d3AABB(p);
@@ -5131,13 +5148,24 @@ function d3RenderModToggles(){
   const box = document.getElementById("d3ModToggles");
   if (!box) return;
   const mods = [...new Set(d3.pieces.map(p => p.mod).filter(m => m && m !== "base"))];
-  if (!mods.length){ box.innerHTML = ""; return; }
+  const meshCandidates = d3.pieces.filter(p => p.kind === "chapa" && (!p.mod || p.mod === "base" || !(d3.hideMods && d3.hideMods[p.mod])) && (p.mesh || /malla|despleg|estante|rejilla|panel/i.test(String(p.name || "")) || p.l >= 250));
+  if (!mods.length && !meshCandidates.length){ box.innerHTML = ""; return; }
   d3.hideMods = d3.hideMods || {};
-  box.innerHTML = `<span class="lab" style="align-self:center;margin-right:6px">Módulos opcionales:</span>` +
-    mods.map(m => {
-      const vis = !d3.hideMods[m];
-      return `<button type="button" class="chip" data-mod="${esc(m)}" aria-pressed="${vis}">${vis ? "👁️ Visible: " : "🚫 Oculto: "}${esc(m)}</button>`;
-    }).join("");
+  let html = "";
+  if (mods.length){
+    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%;align-items:center"><span class="lab" style="margin:0 4px 0 0">Módulos opcionales:</span>` +
+      mods.map(m => {
+        const vis = !d3.hideMods[m];
+        return `<button type="button" class="chip" data-mod="${esc(m)}" aria-pressed="${vis}">${vis ? "👁️ Visible: " : "🚫 Oculto: "}${esc(m)}</button>`;
+      }).join("") + `</div>`;
+  }
+  if (meshCandidates.length){
+    html += `<div style="display:flex;gap:6px;flex-wrap:wrap;width:100%;align-items:center;margin-top:6px"><span class="lab" style="margin:0 4px 0 0">Convertir plano a malla 3D:</span>` +
+      meshCandidates.map(p => {
+        return `<button type="button" class="chip" data-meshid="${esc(p.id)}" aria-pressed="${!!p.mesh}">${p.mesh ? "🕸️ Malla 3D: " : "🔲 Plano (Click → Malla): "}${esc(p.name)}</button>`;
+      }).join("") + `</div>`;
+  }
+  box.innerHTML = html;
 }
 
 function d3ExportGLB(){
@@ -5261,7 +5289,7 @@ function d3ImportFromAI(){
         extraCons.push(p);
         continue;
       }
-      const clean = d3SanitizePiece(Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:!!p.hw}, p));
+      const clean = d3SanitizePiece(Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:!!p.hw}, p, {mesh: false}));
       if (clean) validPieces.push(clean);
     }
     d3.lastConsumables = (Array.isArray(d.consumables) ? d.consumables : []).concat(extraCons);
@@ -5277,6 +5305,18 @@ function d3ImportFromAI(){
 document.getElementById("d3BtnLoadAi")?.addEventListener("click", d3ImportFromAI);
 document.getElementById("d3BtnExportGlb")?.addEventListener("click", d3ExportGLB);
 document.getElementById("d3ModToggles")?.addEventListener("click", e => {
+  const bm = e.target.closest("[data-meshid]");
+  if (bm){
+    const p = d3.pieces.find(q => q.id === bm.dataset.meshid);
+    if (p && p.kind === "chapa"){
+      p.mesh = !p.mesh;
+      d3.sel = p.id;
+      d3RenderModToggles();
+      d3SelRender(); d3Save(); d3Draw();
+      flag(p.mesh ? "Convertido en malla desplegada 3D: " + p.name : "Vuelto a plano liso: " + p.name);
+    }
+    return;
+  }
   const b = e.target.closest("[data-mod]");
   if (!b) return;
   const m = b.dataset.mod;
