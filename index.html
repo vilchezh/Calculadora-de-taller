@@ -3255,7 +3255,7 @@ function applyTab(tab){
   pb.textContent = "Imprimir";
   pb.title = tab === "mat" ? "Imprimir la cotización de materiales" : tab === "quote" ? "Imprimir el presupuesto" : tab === "d3" ? "Imprimir el despiece del diseño 3D" : "Imprimir el plano de corte";
   // ejemplo / empezar de cero no aplican a la calculadora ni a presupuestos; imprimir tampoco a la calculadora
-  ["btnDemo", "btnReset"].forEach(id => { document.getElementById(id).hidden = tab === "calc" || tab === "quote"; });
+  ["btnDemo", "btnClearTab"].forEach(id => { document.getElementById(id).hidden = tab === "calc" || tab === "quote"; });
   document.getElementById("btnPrint").hidden = tab === "calc";
   document.getElementById("qBanner").hidden = !(tab === "mat" && qReturn);
   if (tab === "quote"){ qReturn = false; qFillPick(); qRefresh(); renderQBook(); }
@@ -3617,6 +3617,10 @@ function d3SanitizePiece(p){
   out.y = Math.max(0, numOr(out.y, 0));
   out.z = numOr(out.z, 0);
   out.rot = numOr(out.rot, 0);
+  out.rx = numOr(out.rx, 0);
+  out.rz = numOr(out.rz, 0);
+  out.hw = !!out.hw;
+  out.mesh = !!(out.mesh || /malla|despleg/i.test(String(out.name || "")));
   if (!["x", "y", "z"].includes(out.axis)) out.axis = "x";
   if (out.kind === "madera" || out.kind === "chapa"){
     out.l = numOr(out.l, 500, 1);
@@ -3724,6 +3728,36 @@ function d3Boxes(p){
   if (p && p.kind === "plegada" && Array.isArray(p.segs) && p.segs.length) return p.segs;
   const D = d3Dims(p);
   return [{ x:0, y:0, z:0, dx:D[0], dy:D[1], dz:D[2] }];
+}
+
+/* Genera los segmentos 2D/3D de rombos para mallas de metal desplegado (p.mesh = true) */
+function d3MeshData(p){
+  const L = Math.max(20, +p.l || 500), W = Math.max(20, +p.w || 300), t = Math.max(2.5, +p.t || 2.5);
+  const nu = Math.max(4, Math.min(22, Math.round(L / 55)));
+  const nv = Math.max(4, Math.min(22, Math.round(W / 28)));
+  const segs = [
+    [0, 0, L, 0, 5], [L, 0, L, W, 5], [L, W, 0, W, 5], [0, W, 0, 0, 5]
+  ];
+  for (let k = -nv + 1; k < nu; k++){
+    const pts = [];
+    for (const u of [0, 1]){ const v = (u * nu - k) / nv; if (v >= 0 && v <= 1) pts.push([u * L, v * W]); }
+    for (const v of [0, 1]){ const u = (k + v * nv) / nu; if (u > 0 && u < 1) pts.push([u * L, v * W]); }
+    if (pts.length >= 2){
+      const a = pts[0], b = pts[pts.length - 1];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 4) segs.push([a[0], a[1], b[0], b[1], 3.2]);
+    }
+  }
+  for (let k = 1; k < nu + nv; k++){
+    const pts = [];
+    for (const u of [0, 1]){ const v = (k - u * nu) / nv; if (v >= 0 && v <= 1) pts.push([u * L, v * W]); }
+    for (const v of [0, 1]){ const u = (k - v * nv) / nu; if (u > 0 && u < 1) pts.push([u * L, v * W]); }
+    if (pts.length >= 2){
+      const a = pts[0], b = pts[pts.length - 1];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 4) segs.push([a[0], a[1], b[0], b[1], 3.2]);
+    }
+  }
+  const toW = (u, v, th) => p.axis === "y" ? d3World(p, th, u, v) : d3World(p, u, th, v);
+  return { L, W, t, segs, toW };
 }
 
 /* --- chapa plegada: desarrollo y dobleces (a 90°, convención de taller:
@@ -3905,7 +3939,23 @@ function d3Draw(){
   const faces = [];
   for (const p of d3.pieces){
     if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) continue;
-    const base = D3_COLORS[p.kind] || D3_COLORS.madera;
+    if (p.mesh){
+      const md = d3MeshData(p);
+      const hm = md.t / 2;
+      const q = [md.toW(0,0,hm), md.toW(md.L,0,hm), md.toW(md.L,md.W,hm), md.toW(0,md.W,hm)];
+      const pts = q.map(w => P(w.x, w.y, w.z));
+      const avgZ = (pts[0].z + pts[1].z + pts[2].z + pts[3].z) / 4;
+      const mLines = md.segs.map(s => {
+        const a = md.toW(s[0], s[1], hm), b = md.toW(s[2], s[3], hm);
+        return [P(a.x, a.y, a.z), P(b.x, b.y, b.z), s[4]];
+      });
+      faces.push({
+        z: avgZ, pieceZ: avgZ, pts, fill: "rgba(35,50,55,0.08)",
+        meshLines: mLines, piece: p
+      });
+      continue;
+    }
+    const base = (p.hw && p.kind === "chapa") ? [72, 82, 88] : (D3_COLORS[p.kind] || D3_COLORS.madera);
     const boxes = d3Boxes(p);
     for (const b of boxes){
       const C = [];
@@ -3962,8 +4012,19 @@ function d3Draw(){
     d3ctx.closePath();
     d3ctx.fillStyle = fc.fill;
     d3ctx.fill();
-    d3ctx.strokeStyle = fc.piece && fc.piece.mesh ? "rgba(20,62,69,.8)" : "rgba(20,62,69,.22)";
-    if (fc.piece && fc.piece.mesh) { d3ctx.setLineDash([2, 2]); } else { d3ctx.setLineDash([]); }
+    if (fc.meshLines){
+      d3ctx.strokeStyle = fc.piece && fc.piece.id === d3.sel ? "#a52816" : "rgba(35,52,58,0.85)";
+      d3ctx.lineWidth = Math.max(1, 2.2 * S);
+      d3ctx.beginPath();
+      for (const ml of fc.meshLines){
+        d3ctx.moveTo(ml[0].x, ml[0].y);
+        d3ctx.lineTo(ml[1].x, ml[1].y);
+      }
+      d3ctx.stroke();
+      d3ctx.lineWidth = 1;
+      continue;
+    }
+    d3ctx.strokeStyle = "rgba(20,62,69,.22)";
     d3ctx.stroke();
 
     /* tapa hueca del caño: rectángulo interior oscuro en cada extremo */
@@ -5079,130 +5140,141 @@ function d3RenderModToggles(){
     }).join("");
 }
 
-// Textura base64 para malla (grilla transparente)
-const GLB_MESH_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJklEQVQYV2NkYGD4z0AAMIIwEwPVAXAMsAJG8kUhcUj8U/VADAAA03gPwa4G24sAAAAASUVORK5CYII=";
-
 function d3ExportGLB(){
   if(!d3.pieces.length){ flag("Agregá piezas primero"); return; }
-  const woodC = (D3_FINISH_WOOD[d3.woodTone || "paraiso"] || [216,192,152]).map(v => +(v/255).toFixed(3));
-  const ironC = (D3_FINISH_IRON[d3.ironTone || "negro"] || [42,46,48]).map(v => +(v/255).toFixed(3));
+  const pos=[], nrm=[], idx=[], nodes=[], meshes=[];
+  let vOff=0;
 
-  const pos=[], nrm=[], uvs=[], idx=[], nodes=[], meshes=[];
-  let vOff=0, hasMesh = false;
-  
+  const pushPrism = (C) => {
+    [[[0,4,6,2],[-1,0,0]],[[1,3,7,5],[1,0,0]],[[0,1,5,4],[0,-1,0]],[[2,6,7,3],[0,1,0]],[[0,2,3,1],[0,0,-1]],[[4,5,7,6],[0,0,1]]].forEach(([f,n])=>{
+      f.forEach(k=>{ pos.push(...C[k]); nrm.push(...n); });
+      idx.push(vOff,vOff+1,vOff+2,vOff,vOff+2,vOff+3); vOff+=4;
+    });
+  };
+
   d3.pieces.forEach((p,i)=>{
     if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) return;
-    if (p.mesh) hasMesh = true;
     const sIdx=idx.length;
-    d3Boxes(p).forEach(b=>{
-      const C=[];
-      for(let j=0;j<8;j++){
-        const w=d3World(p,b.x+((j&1)?b.dx:0),b.y+((j&2)?b.dy:0),b.z+((j&4)?b.dz:0));
-        C.push([(w.x-d3.cam.tx)/1000, w.y/1000, (w.z-d3.cam.tz)/1000]);
+    if (p.mesh){
+      // Genera geometría 3D real de metal desplegado (rombos calados en 3D + marco)
+      const md = d3MeshData(p);
+      for (const s of md.segs){
+        const u1 = s[0], v1 = s[1], u2 = s[2], v2 = s[3], sw = s[4];
+        const du = u2 - u1, dv = v2 - v1, len = Math.hypot(du, dv) || 1;
+        const pu = (-dv / len) * (sw / 2), pv = (du / len) * (sw / 2);
+        const C = [];
+        for (let j = 0; j < 8; j++){
+          const u = (j & 1) ? u2 : u1;
+          const v = (j & 1) ? v2 : v1;
+          const th = (j & 2) ? md.t : 0;
+          const sgn = (j & 4) ? 1 : -1;
+          const w = md.toW(u + sgn * pu, v + sgn * pv, th);
+          C.push([(w.x - d3.cam.tx)/1000, w.y/1000, (w.z - d3.cam.tz)/1000]);
+        }
+        pushPrism(C);
       }
-      [[[0,4,6,2],[-1,0,0]],[[1,3,7,5],[1,0,0]],[[0,1,5,4],[0,-1,0]],[[2,6,7,3],[0,1,0]],[[0,2,3,1],[0,0,-1]],[[4,5,7,6],[0,0,1]]].forEach(([f,n])=>{
-        f.forEach(k=>{ 
-            pos.push(...C[k]); 
-            nrm.push(...n); 
-            // UVs: map world coordinates for texturing meshes
-            let u=0, v=0;
-            if (Math.abs(n[0]) > 0.5) { u=C[k][2]; v=C[k][1]; }
-            else if (Math.abs(n[1]) > 0.5) { u=C[k][0]; v=C[k][2]; }
-            else { u=C[k][0]; v=C[k][1]; }
-            uvs.push(u * 20, v * 20); // Scale factor for the grid
-        });
-        idx.push(vOff,vOff+1,vOff+2,vOff,vOff+2,vOff+3); vOff+=4;
+    } else {
+      d3Boxes(p).forEach(b=>{
+        const C=[];
+        for(let j=0;j<8;j++){
+          const w=d3World(p,b.x+((j&1)?b.dx:0),b.y+((j&2)?b.dy:0),b.z+((j&4)?b.dz:0));
+          C.push([(w.x-d3.cam.tx)/1000, w.y/1000, (w.z-d3.cam.tz)/1000]);
+        }
+        pushPrism(C);
       });
-    });
-    if(idx.length>sIdx) {
-        let matIdx = p.kind==="madera" ? 0 : 1;
-        if (p.mesh) matIdx = 2; // Mesh material
-        meshes.push({name:p.name||("p"+i), start:sIdx, count:idx.length-sIdx, mat:matIdx});
     }
+    if(idx.length>sIdx) meshes.push({name:p.name||("p"+i), start:sIdx, count:idx.length-sIdx, mat:p.kind==="madera"?0:1});
   });
-  
-  const pA=new Float32Array(pos), nA=new Float32Array(nrm), uA=new Float32Array(uvs), iA=new Uint32Array(idx);
+
+  const pA=new Float32Array(pos), nA=new Float32Array(nrm), iA=new Uint32Array(idx);
   let gMin=[Infinity,Infinity,Infinity], gMax=[-Infinity,-Infinity,-Infinity];
   for(let i=0;i<pos.length;i+=3) for(let j=0;j<3;j++){
     gMin[j]=Math.min(gMin[j],pos[i+j]); gMax[j]=Math.max(gMax[j],pos[i+j]);
   }
-  
   const acc=[
     {bufferView:0,componentType:5126,count:pos.length/3,type:"VEC3",min:gMin,max:gMax},
-    {bufferView:1,componentType:5126,count:nrm.length/3,type:"VEC3"},
-    {bufferView:2,componentType:5126,count:uvs.length/2,type:"VEC2"}
+    {bufferView:1,componentType:5126,count:nrm.length/3,type:"VEC3"}
   ];
-  
   const gMesh=meshes.map((m,i)=>{
-    acc.push({bufferView:3,byteOffset:m.start*4,componentType:5125,count:m.count,type:"SCALAR"});
+    acc.push({bufferView:2,byteOffset:m.start*4,componentType:5125,count:m.count,type:"SCALAR"});
     nodes.push({name:m.name,mesh:i});
-    return {name:m.name,primitives:[{attributes:{POSITION:0,NORMAL:1,TEXCOORD_0:2},indices:i+3,material:m.mat}]};
+    return {name:m.name,primitives:[{attributes:{POSITION:0,NORMAL:1},indices:i+2,material:m.mat}]};
   });
-  
-  const materials = [
-      {name: "madera", pbrMetallicRoughness:{baseColorFactor:[...woodC,1],metallicFactor:0.05,roughnessFactor:0.65}},
-      {name: "hierro", pbrMetallicRoughness:{baseColorFactor:[...ironC,1],metallicFactor:0.75,roughnessFactor:0.35}}
-  ];
-  if (hasMesh) {
-      materials.push({
-          name: "malla", doubleSided: true, alphaMode: "MASK", alphaCutoff: 0.3,
-          pbrMetallicRoughness: { baseColorFactor: [...ironC, 1], baseColorTexture: { index: 0 }, metallicFactor: 0.9, roughnessFactor: 0.4 }
-      });
-  }
-
   const gltf={
     asset:{version:"2.0"}, scene:0, scenes:[{nodes:nodes.map((_,i)=>i)}], nodes, meshes:gMesh,
-    materials
+    materials:[
+      {name:"madera",doubleSided:true,pbrMetallicRoughness:{baseColorFactor:[0.82,0.71,0.55,1],metallicFactor:0.05,roughnessFactor:0.7}},
+      {name:"hierro",doubleSided:true,pbrMetallicRoughness:{baseColorFactor:[0.16,0.18,0.19,1],metallicFactor:0.8,roughnessFactor:0.38}}
+    ],
+    bufferViews:[
+      {buffer:0,byteOffset:0,byteLength:pA.byteLength,target:34962},
+      {buffer:0,byteOffset:pA.byteLength,byteLength:nA.byteLength,target:34962},
+      {buffer:0,byteOffset:pA.byteLength+nA.byteLength,byteLength:iA.byteLength,target:34963}
+    ],
+    accessors:acc, buffers:[{byteLength:pA.byteLength+nA.byteLength+iA.byteLength}]
   };
-  
-  // Convert base64 to binary for the image
-  let imgBytes = new Uint8Array(0);
-  if (hasMesh) {
-      const b64 = GLB_MESH_PNG.split(",")[1];
-      const binStr = atob(b64);
-      imgBytes = new Uint8Array(binStr.length);
-      for(let i=0; i<binStr.length; i++) imgBytes[i] = binStr.charCodeAt(i);
-      gltf.images = [{ bufferView: 4, mimeType: "image/png" }];
-      gltf.samplers = [{ magFilter: 9728, minFilter: 9728, wrapS: 10497, wrapT: 10497 }]; // NEAREST, REPEAT
-      gltf.textures = [{ sampler: 0, source: 0 }];
-  }
-
-  const pBytes = pA.byteLength, nBytes = nA.byteLength, uBytes = uA.byteLength, iBytes = iA.byteLength, imgLen = imgBytes.byteLength;
-  
-  gltf.bufferViews = [
-    {buffer:0,byteOffset:0,byteLength:pBytes,target:34962},
-    {buffer:0,byteOffset:pBytes,byteLength:nBytes,target:34962},
-    {buffer:0,byteOffset:pBytes+nBytes,byteLength:uBytes,target:34962},
-    {buffer:0,byteOffset:pBytes+nBytes+uBytes,byteLength:iBytes,target:34963}
-  ];
-  if (hasMesh) {
-      gltf.bufferViews.push({buffer:0,byteOffset:pBytes+nBytes+uBytes+iBytes,byteLength:imgLen});
-  }
-  
-  const totalBin = pBytes + nBytes + uBytes + iBytes + imgLen;
-  gltf.buffers = [{byteLength:totalBin}];
-
   const jB=new TextEncoder().encode(JSON.stringify(gltf));
-  const jPad=(4-(jB.byteLength%4))%4, bPad=(4-(totalBin%4))%4;
-  const out=new ArrayBuffer(28+jB.byteLength+jPad+totalBin+bPad);
+  const jPad=(4-(jB.byteLength%4))%4, bPad=(4-(gltf.buffers[0].byteLength%4))%4;
+  const out=new ArrayBuffer(28+jB.byteLength+jPad+gltf.buffers[0].byteLength+bPad);
   const dv=new DataView(out), u8=new Uint8Array(out);
-  
   dv.setUint32(0,0x46546C67,true); dv.setUint32(4,2,true); dv.setUint32(8,out.byteLength,true);
   dv.setUint32(12,jB.byteLength+jPad,true); dv.setUint32(16,0x4E4F534A,true);
   u8.set(jB,20); for(let i=0;i<jPad;i++) u8[20+jB.byteLength+i]=0x20;
-  
   const bS=20+jB.byteLength+jPad;
-  dv.setUint32(bS,totalBin+bPad,true); dv.setUint32(bS+4,0x004E4942,true);
-  u8.set(new Uint8Array(pA.buffer),bS+8); 
-  u8.set(new Uint8Array(nA.buffer),bS+8+pBytes); 
-  u8.set(new Uint8Array(uA.buffer),bS+8+pBytes+nBytes); 
-  u8.set(new Uint8Array(iA.buffer),bS+8+pBytes+nBytes+uBytes);
-  if (hasMesh) u8.set(imgBytes, bS+8+pBytes+nBytes+uBytes+iBytes);
-  
+  dv.setUint32(bS,gltf.buffers[0].byteLength+bPad,true); dv.setUint32(bS+4,0x004E4942,true);
+  u8.set(new Uint8Array(pA.buffer),bS+8); u8.set(new Uint8Array(nA.buffer),bS+8+pA.byteLength); u8.set(new Uint8Array(iA.buffer),bS+8+pA.byteLength+nA.byteLength);
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([out],{type:"model/gltf-binary"}));
-  a.download=((mat.name || "mueble-3d").toLowerCase().replace(/[^a-z0-9]+/g, "-")) + ".glb"; 
-  a.click(); flag("GLB descargado con textura de malla");
+  a.download=((mat.name || "mueble-3d").toLowerCase().replace(/[^a-z0-9]+/g, "-")) + ".glb";
+  a.click(); flag("GLB 3D descargado (con malla calada 3D)");
 }
+
+function d3RecalcAllFrom3D(){
+  state.pieces = [];
+  mat.items = [];
+  d3.pieces.forEach(p => {
+    const hidden = p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod];
+    p._sent = !!(p.hw || hidden);
+  });
+  d3SendCorte();
+  d3SendMat();
+  if (Array.isArray(d3.lastConsumables)){
+    d3.lastConsumables.forEach(c => {
+      if (c.mod && c.mod !== "base" && d3.hideMods && d3.hideMods[c.mod]) return;
+      mat.items.push(sanitizeMatItem(c));
+    });
+  }
+  save(); render(); saveMat(); renderMat();
+}
+
+function d3ImportFromAI(){
+  try{
+    const raw = document.getElementById("d3AiJson").value.trim();
+    if (!raw){ flag("Pegá primero el JSON en el cuadro"); return; }
+    const d = JSON.parse(raw);
+    d3.hideMods = {};
+    const extraCons = [];
+    const rawPieces = Array.isArray(d.pieces) ? d.pieces : [];
+    const validPieces = [];
+    for (const p of rawPieces){
+      if (!p || typeof p !== "object") continue;
+      if (p.kind === "directo" || p.kind === "consumible" || p.kind === "tablero" || p.kind === "barra"){
+        extraCons.push(p);
+        continue;
+      }
+      const clean = d3SanitizePiece(Object.assign({id:uid(),rot:0,axis:"x",mod:"base",_sent:!!p.hw}, p));
+      if (clean) validPieces.push(clean);
+    }
+    d3.lastConsumables = (Array.isArray(d.consumables) ? d.consumables : []).concat(extraCons);
+    d3.pieces = validPieces;
+    if(d.name){ mat.name=d.name; document.getElementById("mName").value=d.name; }
+    d3RecalcAllFrom3D();
+    d3RenderModToggles();
+    d3Fit(); d3Save(); d3SelRender(); d3TelRender(); d3OutRender(); d3Status(); d3StatsRender(); d3Draw();
+    flag("Mueble cargado: " + validPieces.length + " piezas 3D en escena");
+  }catch(e){ console.error(e); flag("Error en JSON: verificá que esté completo"); }
+}
+
+document.getElementById("d3BtnLoadAi")?.addEventListener("click", d3ImportFromAI);
 document.getElementById("d3BtnExportGlb")?.addEventListener("click", d3ExportGLB);
 document.getElementById("d3ModToggles")?.addEventListener("click", e => {
   const b = e.target.closest("[data-mod]");
