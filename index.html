@@ -5687,5 +5687,44 @@ render();
   }
 })();
 </script>
+   <script>
+(function(){
+  // Fase 4: Extensión del Imán para deslizamiento guiado sobre ejes (Shift lock en movimiento)
+  const origMove = window.d3Move;
+  if (typeof origMove === "function"){
+    window.d3Move = function(e){
+      if (e.shiftKey && d3Drag && d3Drag.tipo === "pieza"){
+        // Al mantener Shift en modo mover, restringimos el arrastre al eje principal de la pieza de destino o imán más cercano
+        const p = d3Drag.p;
+        const cap = Math.max(1, +d3.capture || 8);
+        origMove.call(this, e);
+        // Si hay una guía de imán activa, forzamos el bloqueo de posición sobre ese valor de eje
+        if (d3.snaps && d3.snaps.length){
+          const s = d3.snaps[0];
+          if (s.axis === "x") p.x = s.val;
+          else if (s.axis === "y") p.y = s.val;
+          else if (s.axis === "z") p.z = s.val;
+        }
+        return;
+      }
+      return origMove.apply(this, arguments);
+    };
+  }
+
+  // Añadir un indicador visual en el estado cuando el deslizador Shift esté activo
+  const origStatus = window.d3Status;
+  if (typeof origStatus === "function"){
+    window.d3Status = function(){
+      origStatus.apply(this, arguments);
+      const el = document.getElementById("d3Status");
+      if (el && d3Drag && d3Drag.tipo === "pieza"){
+        el.innerHTML += " · 🔒 <b>Deslizamiento guiado (Shift activo)</b>";
+      }
+    };
+  }
+  
+  flag("🚀 Fase 4 instalada: Mantené Shift al arrastrar para deslizar piezas guiadas sobre los perfiles");
+})();
+   </script>
 </body>
 </html>
