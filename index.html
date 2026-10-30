@@ -5543,5 +5543,149 @@ render();
   renderCotasBar();
 })();
 </script>
+<script>
+(function(){
+  // 1. Conservar propiedades de inglete (corte1, corte2, corteDir) al cargar o importar piezas
+  const origSan = window.d3SanitizePiece;
+  if (typeof origSan === "function"){
+    window.d3SanitizePiece = function(p){
+      const out = origSan.apply(this, arguments);
+      if (out && p){
+        out.corte1 = numOr(p.corte1, 0, -60, 60);
+        out.corte2 = numOr(p.corte2, 0, -60, 60);
+        out.corteDir = p.corteDir === "h" ? "h" : "v";
+      }
+      return out;
+    };
+  }
+
+  // 2. Evitar deformar el AABB (colisiones e imán siguen usando la caja exterior limpia)
+  let inAABB = false;
+  const origAABB = window.d3AABB;
+  if (typeof origAABB === "function"){
+    window.d3AABB = function(p){
+      inAABB = true;
+      try { return origAABB.apply(this, arguments); }
+      finally { inAABB = false; }
+    };
+  }
+
+  // 3. Desplazar vértices en los extremos para formar el corte a 45° (u otro ángulo) en 3D y GLB
+  const origWorld = window.d3World;
+  if (typeof origWorld === "function"){
+    window.d3World = function(p, lx, ly, lz){
+      if (!inAABB && p && (p.corte1 || p.corte2) && (p.kind === "perfil" || p.kind === "madera" || p.kind === "chapa")){
+        const D = d3Dims(p);
+        const c1 = (+p.corte1 || 0) * Math.PI / 180;
+        const c2 = (+p.corte2 || 0) * Math.PI / 180;
+        const eps = (p.kind === "perfil" ? (p.wall || 1.6) : 0) + 0.5;
+        const horiz = p.corteDir === "h";
+
+        if (p.axis === "y"){
+          // Pieza vertical (ej. pata): largo en Y, bisel según X (v) o Z (h)
+          const t = horiz ? (lz / (D[2] || 1)) : (lx / (D[0] || 1));
+          const span = horiz ? D[2] : D[0];
+          if (ly <= eps && c1) ly += (c1 > 0 ? t : 1 - t) * span * Math.tan(Math.abs(c1));
+          else if (ly >= D[1] - eps && c2) ly -= (c2 > 0 ? t : 1 - t) * span * Math.tan(Math.abs(c2));
+        } else if (p.axis === "z"){
+          // Pieza horizontal profunda: largo en Z, bisel según Y (v) o X (h)
+          const t = horiz ? (lx / (D[0] || 1)) : (1 - ly / (D[1] || 1));
+          const span = horiz ? D[0] : D[1];
+          if (lz <= eps && c1) lz += (c1 > 0 ? t : 1 - t) * span * Math.tan(Math.abs(c1));
+          else if (lz >= D[2] - eps && c2) lz -= (c2 > 0 ? t : 1 - t) * span * Math.tan(Math.abs(c2));
+        } else {
+          // Pieza horizontal a lo largo: largo en X, bisel según Y (v) o Z (h)
+          const t = horiz ? (lz / (D[2] || 1)) : (1 - ly / (D[1] || 1));
+          const span = horiz ? D[2] : D[1];
+          if (lx <= eps && c1) lx += (c1 > 0 ? t : 1 - t) * span * Math.tan(Math.abs(c1));
+          else if (lx >= D[0] - eps && c2) lx -= (c2 > 0 ? t : 1 - t) * span * Math.tan(Math.abs(c2));
+        }
+      }
+      return origWorld.call(this, p, lx, ly, lz);
+    };
+  }
+
+  // 4. Inyectar controles de corte en ángulo dentro de "3. Pieza seleccionada"
+  const origSel = window.d3SelRender;
+  if (typeof origSel === "function"){
+    window.d3SelRender = function(){
+      origSel.apply(this, arguments);
+      const p = d3.pieces.find(q => q.id === d3.sel);
+      if (!p || (p.kind !== "perfil" && p.kind !== "madera" && p.kind !== "chapa")) return;
+      const box = document.getElementById("d3SelBox");
+      if (!box || box.querySelector("[data-s='corte1']")) return;
+
+      const wrap = document.createElement("div");
+      wrap.style.cssText = "margin-top:8px;padding:8px 10px;background:var(--panel-2);border:1px solid var(--rule);border-radius:var(--r)";
+      wrap.innerHTML = `
+        <div class="grid g3">
+          <label><span class="lab">Corte Ext. 1 (°)</span>
+            <input type="number" data-s="corte1" min="-60" max="60" step="5" value="${p.corte1 || 0}"></label>
+          <label><span class="lab">Corte Ext. 2 (°)</span>
+            <input type="number" data-s="corte2" min="-60" max="60" step="5" value="${p.corte2 || 0}"></label>
+          <label><span class="lab">Plano del bisel</span>
+            <select data-s="corteDir">
+              <option value="v"${p.corteDir !== "h" ? " selected" : ""}>Vertical (patas)</option>
+              <option value="h"${p.corteDir === "h" ? " selected" : ""}>Planta (horiz.)</option>
+            </select></label>
+        </div>
+        <div class="d3nudge" style="margin-top:6px">
+          <button class="btn quiet" type="button" data-mcut="45,45">📐 Marco 45°/45°</button>
+          <button class="btn quiet" type="button" data-mcut="45,0">45° / 0°</button>
+          <button class="btn quiet" type="button" data-mcut="0,45">0° / 45°</button>
+          <button class="btn quiet" type="button" data-mcut="inv">🔄 Invertir</button>
+          <button class="btn quiet" type="button" data-mcut="0,0">Recto 90°</button>
+        </div>`;
+      const firstNudge = box.querySelector(".d3nudge");
+      if (firstNudge) box.insertBefore(wrap, firstNudge); else box.appendChild(wrap);
+    };
+  }
+
+  const selBox = document.getElementById("d3SelBox");
+  selBox?.addEventListener("input", e => {
+    const f = e.target.dataset.s;
+    if (f !== "corte1" && f !== "corte2" && f !== "corteDir") return;
+    const p = d3.pieces.find(q => q.id === d3.sel);
+    if (!p) return;
+    if (f === "corteDir") p.corteDir = e.target.value;
+    else p[f] = numOr(e.target.value, 0, -60, 60);
+    d3Save(); d3OutRender(); d3Draw();
+  });
+
+  selBox?.addEventListener("click", e => {
+    const b = e.target.closest("[data-mcut]");
+    if (!b) return;
+    const p = d3.pieces.find(q => q.id === d3.sel);
+    if (!p) return;
+    const v = b.dataset.mcut;
+    if (v === "inv"){
+      p.corte1 = -(p.corte1 || 0);
+      p.corte2 = -(p.corte2 || 0);
+    } else {
+      const [c1, c2] = v.split(",").map(Number);
+      p.corte1 = c1; p.corte2 = c2;
+    }
+    d3Save(); d3SelRender(); d3OutRender(); d3Draw();
+    flag("📐 Corte ajustado: " + (p.corte1 || 0) + "° / " + (p.corte2 || 0) + "°");
+  });
+
+  // 5. Mostrar los ángulos de inglete en la tabla de "6. Despiece y salida"
+  const origOut = window.d3OutRender;
+  if (typeof origOut === "function"){
+    window.d3OutRender = function(){
+      origOut.apply(this, arguments);
+      const rows = d3CutRows();
+      const trs = document.querySelectorAll("#d3CutTable tbody tr");
+      rows.forEach((g, i) => {
+        const p = g.p;
+        if (trs[i] && (p.corte1 || p.corte2)){
+          const td = trs[i].children[3];
+          if (td) td.textContent = (p.corte1 || 0) + "° / " + (p.corte2 || 0) + "°";
+        }
+      });
+    };
+  }
+})();
+</script>
 </body>
 </html>
