@@ -5376,5 +5376,70 @@ render();
     <span>Autor: <a href="https://github.com/vilchezh" target="_blank" rel="noopener noreferrer">Acero y Escamas (vilchezh)</a> · <a href="https://github.com/vilchezh/Calculadora-de-taller" target="_blank" rel="noopener noreferrer">GitHub</a></span>
   </div>
 </footer>
+   <style>
+  /* Fase 1: Acordeones desplegables y Visor 3D fijo */
+  @media (min-width: 1041px){
+    #viewD3 .output{ position: sticky; top: 54px; align-self: start; }
+  }
+  #viewD3 .card > h2{ cursor: pointer; user-select: none; }
+  #viewD3 .card > h2::after{ content: "▾"; margin-left: auto; font-size: 13px; color: var(--ink-3); }
+  #viewD3 .card > h2 small + *{ margin-left: 0; }
+  #viewD3 .card > h2 small{ margin-left: 8px; margin-right: auto; }
+  #viewD3 .card.d3-closed > h2{ border-bottom-color: transparent; }
+  #viewD3 .card.d3-closed > h2::after{ content: "▸"; }
+  #viewD3 .card.d3-closed > .body{ display: none; }
+  .d3-quickbar{ display:flex; gap:5px; flex-wrap:wrap; align-items:center; padding:0 0 8px; }
+  .d3-quickbar .chip, .d3-quickbar .btn{ padding:4px 9px; font-size:12.5px; min-height:0; }
+</style>
+<script>
+(function(){
+  // 1. Hacer desplegables las tarjetas de Diseño 3D (arrancan cerradas 2 y 4 para ahorrar espacio)
+  const cards = document.querySelectorAll("#viewD3 .setup .card, #viewD3 .output .card:not(:first-child)");
+  cards.forEach((c, idx) => {
+    const h2 = c.querySelector(":scope > h2");
+    if (!h2) return;
+    if (idx === 1 || idx === 3) c.classList.add("d3-closed");
+    h2.addEventListener("click", () => c.classList.toggle("d3-closed"));
+  });
+
+  // 2. Barra rápida pegada arriba del lienzo 3D (sin necesidad de bajar a Herramientas)
+  const pad = document.querySelector("#viewD3 .d3pad");
+  if (pad){
+    const qb = document.createElement("div");
+    qb.className = "d3-quickbar";
+    qb.innerHTML = `
+      <button type="button" class="chip" data-qm="mover" aria-pressed="true">Mover</button>
+      <button type="button" class="chip" data-qm="cam" aria-pressed="false">Cámara</button>
+      <button type="button" class="chip" data-qm="regla" aria-pressed="false">Regla</button>
+      <button type="button" class="chip" data-qm="angulo" aria-pressed="false">Transportador</button>
+      <button type="button" class="chip" id="d3qMag" aria-pressed="${!!d3.magnet}">🧲 Imán</button>
+      <button type="button" class="btn quiet" data-qv="fit">Ajustar</button>
+      <button type="button" class="btn quiet" data-qv="iso">ISO</button>
+    `;
+    pad.insertBefore(qb, pad.firstChild);
+
+    const syncQuick = () => {
+      qb.querySelectorAll("[data-qm]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.qm === d3.mode)));
+      document.getElementById("d3qMag").setAttribute("aria-pressed", String(!!d3.magnet));
+    };
+    qb.addEventListener("click", e => {
+      const m = e.target.closest("[data-qm]"), v = e.target.closest("[data-qv]");
+      if (m){ d3SetMode(m.dataset.qm); syncQuick(); }
+      else if (v){ document.querySelector(`.d3view[data-v="${v.dataset.qv}"]`)?.click(); }
+      else if (e.target.closest("#d3qMag")){
+        const chk = document.getElementById("d3Magnet");
+        chk.checked = !chk.checked; chk.dispatchEvent(new Event("change")); syncQuick();
+      }
+    });
+    ["d3mMover","d3mCam","d3mRegla","d3mAng","d3Magnet"].forEach(id =>
+      document.getElementById(id)?.addEventListener("click", () => setTimeout(syncQuick, 0)));
+  }
+
+  // 3. Abrir automáticamente "3. Pieza seleccionada" al tocar una pieza en el visor
+  document.getElementById("d3Canvas")?.addEventListener("pointerup", () => {
+    if (d3.sel) document.getElementById("d3SelBox")?.closest(".card")?.classList.remove("d3-closed");
+  });
+})();
+</script>
 </body>
 </html>
