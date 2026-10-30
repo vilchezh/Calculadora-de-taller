@@ -5441,5 +5441,107 @@ render();
   });
 })();
 </script>
+   <style>
+  /* Fase 2: Barra interactiva de mediciones de la Regla */
+  .d3-cotasbar{ display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:6px 0 10px; border-top:1px dashed var(--rule); }
+  .d3-cotasbar:empty{ display:none; }
+  .d3-cota-pill{ display:inline-flex; align-items:center; gap:4px; background:var(--cut-soft); border:1px solid #efc4bc; border-radius:var(--r); padding:3px 6px; font-family:var(--narrow); font-size:12.5px; color:#7d1e10; }
+  .d3-cota-pill button{ border:1px solid rgba(165,40,22,.3); background:#fff; color:#7d1e10; border-radius:3px; padding:2px 6px; font-size:12px; cursor:pointer; font-family:var(--narrow); font-weight:600; }
+  .d3-cota-pill button:hover{ background:var(--accent); color:#fff; border-color:var(--accent); }
+</style>
+<script>
+(function(){
+  const statusEl = document.getElementById("d3Status");
+  if (!statusEl) return;
+  const bar = document.createElement("div");
+  bar.className = "d3-cotasbar";
+  bar.id = "d3CotasBar";
+  statusEl.after(bar);
+
+  function cotaNums(c){
+    if (c.type === "ang") return { main: Math.round((c.val || 0) * 10) / 10, unit: "°" };
+    const d = Math.round(Math.hypot(c.a.x - c.b.x, c.a.y - c.b.y, c.a.z - c.b.z));
+    const dx = Math.round(Math.abs(c.b.x - c.a.x));
+    const dy = Math.round(Math.abs(c.b.y - c.a.y));
+    const dz = Math.round(Math.abs(c.b.z - c.a.z));
+    return { main: d, dx, dy, dz, unit: "mm" };
+  }
+
+  function applyLenTo3D(val){
+    if (!(val > 0)) return;
+    const sel = d3.pieces.find(p => p.id === d3.sel);
+    if (sel && (sel.kind === "madera" || sel.kind === "chapa" || sel.kind === "perfil")){
+      if (sel.kind === "perfil") sel.len = val; else sel.l = val;
+      d3Save(); d3SelRender(); d3OutRender(); d3StatsRender(); d3Draw();
+      flag("📏 Largo de «" + sel.name + "» ajustado a " + val + " mm");
+      return;
+    }
+    ["d3mL","d3pLen","d3cL","d3fL"].forEach(id => {
+      const inp = document.getElementById(id);
+      if (inp) inp.value = val;
+    });
+    copyText(String(val));
+    flag("📏 " + val + " mm copiado y cargado en Largo de nueva pieza");
+  }
+
+  function renderCotasBar(){
+    if (!d3.cotas || !d3.cotas.length){ bar.innerHTML = ""; return; }
+    bar.innerHTML = `<span class="lab" style="margin:0 4px 0 0">📏 Medidas (tocá para copiar):</span>` +
+      d3.cotas.map((c, i) => {
+        const n = cotaNums(c);
+        if (c.type === "ang"){
+          return `<span class="d3-cota-pill"><b>#${i+1}: ${n.main}°</b><button type="button" data-copy="${n.main}">📋 Copiar</button></span>`;
+        }
+        return `<span class="d3-cota-pill">
+          <b>#${i+1}: ${n.main} mm</b>
+          <button type="button" data-copy="${n.main}" title="Copiar distancia total">📋 ${n.main}</button>
+          ${n.dx ? `<button type="button" data-copy="${n.dx}" title="Copiar ΔX">ΔX ${n.dx}</button>` : ""}
+          ${n.dy ? `<button type="button" data-copy="${n.dy}" title="Copiar ΔY">ΔY ${n.dy}</button>` : ""}
+          ${n.dz ? `<button type="button" data-copy="${n.dz}" title="Copiar ΔZ">ΔZ ${n.dz}</button>` : ""}
+          <button type="button" data-apply="${n.main}" title="Poner como Largo de pieza">⚡ Usar Largo</button>
+        </span>`;
+      }).join("");
+  }
+
+  bar.addEventListener("click", e => {
+    const cp = e.target.closest("[data-copy]"), ap = e.target.closest("[data-apply]");
+    if (cp){
+      const v = cp.dataset.copy;
+      copyText(v).then(() => flag("📏 Medida copiada: " + v));
+    } else if (ap){
+      applyLenTo3D(parseFloat(ap.dataset.apply));
+    }
+  });
+
+  // Tocar el cartel rojo directamente dentro del Canvas 3D también copia la medida
+  d3cv.addEventListener("pointerup", e => {
+    if (!d3.cotas || !d3.cotas.length) return;
+    const m = d3Local(e);
+    const W = d3cv.clientWidth || 800, H = d3cv.clientHeight || 500, S = d3.cam.scale;
+    const { r, u } = d3CamVecs();
+    const P2 = w => ({
+      x: W/2 + ((w.x - d3.cam.tx)*r.x + (w.y - d3.cam.ty)*r.y + (w.z - d3.cam.tz)*r.z) * S,
+      y: H/2 - ((w.x - d3.cam.tx)*u.x + (w.y - d3.cam.ty)*u.y + (w.z - d3.cam.tz)*u.z) * S
+    });
+    for (const c of d3.cotas){
+      if (c.type === "ang") continue;
+      const s1 = P2(c.a), s2 = P2(c.b);
+      const mx = (s1.x + s2.x)/2, my = (s1.y + s2.y)/2 - 14;
+      if (Math.abs(m.x - mx) <= 55 && Math.abs(m.y - my) <= 14){
+        const val = String(cotaNums(c).main);
+        copyText(val).then(() => flag("📏 Medida copiada del visor: " + val + " mm"));
+        break;
+      }
+    }
+  });
+
+  // Sincronizar la barra cada vez que cambia el estado del visor
+  const origStatus = window.d3Status;
+  if (typeof origStatus === "function"){
+    window.d3Status = function(){ origStatus.apply(this, arguments); renderCotasBar(); };
+  }
+  renderCotasBar();
+})();
+</script>
 </body>
 </html>
