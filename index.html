@@ -5725,8 +5725,7 @@ render();
   
   flag("🚀 Fase 4 instalada: Mantené Shift al arrastrar para deslizar piezas guiadas sobre los perfiles");
 })();
-   </script>
-   <!-- ================= GUARDADO UNIFICADO EN LAS 3 PESTAÑAS ================= -->
+   <!-- ================= SCRIPT UNIFICADO: GUARDADO 3 EN 1 + REGLA Y TRAVESAÑOS ================= -->
 <script>
 (function(){
   const FULL_BOOK_KEY = "taller_full_book_v1";
@@ -5754,7 +5753,7 @@ render();
     });
   }
 
-  // Captura el estado actual de las 3 pestañas
+  // Captura el estado actual de las 3 pestañas (incluyendo piezas y cotas 3D)
   function captureCurrentSnapshot(name){
     return {
       name: name,
@@ -5808,7 +5807,7 @@ render();
       }
     }
 
-    // 3. Restaurar Diseño 3D
+    // 3. Restaurar Diseño 3D (Piezas, Cotas, Módulos)
     if (snap && snap.d3 && typeof d3 !== "undefined"){
       const s3 = JSON.parse(JSON.stringify(snap.d3));
       d3.pieces = Array.isArray(s3.pieces) ? s3.pieces : [];
@@ -5918,6 +5917,7 @@ render();
     };
   }
 
+  // Interceptar clics en Materiales
   document.getElementById("viewMat")?.addEventListener("click", e => {
     const btn = e.target.closest("button[data-id], button[data-act], button[data-book]");
     if (!btn) return;
@@ -5929,6 +5929,7 @@ render();
     }
   });
 
+  // Inyectar tarjetas visuales de guardado en Corte y 3D
   function injectSharedCards(){
     const corteSetup = document.querySelector("#viewCorte .setup");
     if (corteSetup && !document.getElementById("corteBookCard")){
@@ -6020,11 +6021,44 @@ render();
     else if (dl) deleteUnifiedFurniture(dl.dataset.udel);
   });
 
-  const origImportAI = window.d3ImportFromAI;
-  if (typeof origImportAI === "function"){
-    window.d3ImportFromAI = function(){
-      origImportAI.apply(this, arguments);
-      setProjectName(getProjectName());
+  // ================= MEJORAS DE REGLA Y CÁLCULO DE TRAVESAÑOS =================
+  if (typeof d3 !== 'undefined') {
+    // Función para borrar cotas de la regla 3D individualmente
+    d3.removeCota = function(index) {
+      if (Array.isArray(d3.cotas) && d3.cotas[index] !== undefined) {
+        d3.cotas.splice(index, 1);
+        if (typeof d3Save === 'function') d3Save();
+        if (typeof d3Draw === 'function') d3Draw();
+        if (typeof d3TelRender === 'function') d3TelRender();
+      }
+    };
+
+    // Función para calcular la distribución de travesaños desde el interior (Ej: 3 travesaños en 150cm con perfiles de 20x20)
+    d3.calcularDistribucionTravesanos = function(longitudTotalMm, cantidadTravesanos, anchoPerfilMm) {
+      const espacioPerfiles = cantidadTravesanos * anchoPerfilMm;
+      const espacioLibreTotal = longitudTotalMm - espacioPerfiles;
+      const cantidadHuecos = cantidadTravesanos + 1;
+      const distanciaHueco = espacioLibreTotal / cantidadHuecos;
+
+      let acumulado = distanciaHueco;
+      const posiciones = [];
+
+      for (let i = 0; i < cantidadTravesanos; i++) {
+        posiciones.push({
+          travesaño: i + 1,
+          bordeInternoDesdeInicio: Math.round(acumulado),
+          centroPerfil: Math.round(acumulado + (anchoPerfilMm / 2))
+        });
+        acumulado += anchoPerfilMm + distanciaHueco;
+      }
+
+      return {
+        longitudTotal: longitudTotalMm,
+        anchoPerfil: anchoPerfilMm,
+        cantidad: cantidadTravesanos,
+        espacioLibreEntreHornos: Math.round(distanciaHueco),
+        posiciones: posiciones
+      };
     };
   }
 
@@ -6032,6 +6066,5 @@ render();
   renderSharedBookLists();
 })();
 </script>
-```[cite: 2]
 </body>
 </html>
