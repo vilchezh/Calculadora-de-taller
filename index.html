@@ -5726,5 +5726,317 @@ render();
   flag("🚀 Fase 4 instalada: Mantené Shift al arrastrar para deslizar piezas guiadas sobre los perfiles");
 })();
    </script>
+   <!-- ================= GUARDADO UNIFICADO EN LAS 3 PESTAÑAS ================= -->
+<script>
+(function(){
+  const FULL_BOOK_KEY = "taller_full_book_v1";
+
+  function loadFullMap(){
+    try { return JSON.parse(localStorage.getItem(FULL_BOOK_KEY) || "{}"); }
+    catch(e){ return {}; }
+  }
+  function saveFullMap(map){
+    try { localStorage.setItem(FULL_BOOK_KEY, JSON.stringify(map)); }
+    catch(e){}
+  }
+
+  // Sincronizar el nombre del mueble entre las 3 pestañas
+  function getProjectName(){
+    const mInp = document.getElementById("mName");
+    return (mInp && mInp.value.trim()) || (typeof mat !== "undefined" && mat.name && mat.name.trim()) || "";
+  }
+  function setProjectName(val){
+    const clean = String(val || "").trim();
+    if (typeof mat !== "undefined") mat.name = clean;
+    ["mName", "corteBookName", "d3BookName"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.value !== clean) el.value = clean;
+    });
+  }
+
+  // Captura el estado actual de las 3 pestañas
+  function captureCurrentSnapshot(name){
+    return {
+      name: name,
+      savedAt: new Date().toISOString(),
+      corte: typeof state !== "undefined" ? JSON.parse(JSON.stringify(state)) : null,
+      mat: typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : null,
+      d3: typeof d3 !== "undefined" ? JSON.parse(JSON.stringify({
+        pieces: d3.pieces || [],
+        cotas: d3.cotas || [],
+        cat: d3.cat || {},
+        ple: d3.ple || {},
+        hideMods: d3.hideMods || {},
+        lastConsumables: d3.lastConsumables || [],
+        woodTone: d3.woodTone || "paraiso",
+        ironTone: d3.ironTone || "negro"
+      })) : null
+    };
+  }
+
+  // Restaura el mueble en Corte, Materiales y Diseño 3D al mismo tiempo
+  function loadUnifiedFurniture(idOrName){
+    const map = loadFullMap();
+    const bList = (typeof book !== "undefined" && Array.isArray(book)) ? book : [];
+    const bItem = bList.find(x => x.id === idOrName || x.name === idOrName);
+    const snap = map[idOrName] || (bItem && (map[bItem.id] || map[bItem.name]));
+
+    if (!snap && !bItem){
+      if (typeof flag === "function") flag("No se encontró el mueble guardado");
+      return;
+    }
+
+    const name = (snap && snap.name) || (bItem && bItem.name) || "Mueble";
+
+    // 1. Restaurar Plano de Corte
+    if (snap && snap.corte && typeof state !== "undefined"){
+      Object.assign(state, JSON.parse(JSON.stringify(snap.corte)));
+      if (typeof save === "function") save();
+      if (typeof fillForm === "function") fillForm();
+      if (typeof render === "function") render();
+    }
+
+    // 2. Restaurar Cotizador de Materiales
+    if (typeof mat !== "undefined"){
+      const srcMat = (snap && snap.mat) ? snap.mat : bItem;
+      if (srcMat){
+        Object.assign(mat, JSON.parse(JSON.stringify(srcMat)));
+        mat.name = name;
+        if (typeof saveMat === "function") saveMat();
+        if (typeof fillMatForm === "function") fillMatForm();
+        if (typeof renderMat === "function") renderMat();
+      }
+    }
+
+    // 3. Restaurar Diseño 3D
+    if (snap && snap.d3 && typeof d3 !== "undefined"){
+      const s3 = JSON.parse(JSON.stringify(snap.d3));
+      d3.pieces = Array.isArray(s3.pieces) ? s3.pieces : [];
+      d3.cotas = Array.isArray(s3.cotas) ? s3.cotas : [];
+      if (s3.cat) d3.cat = s3.cat;
+      if (s3.ple) d3.ple = Object.assign(d3.ple || {}, s3.ple);
+      d3.hideMods = s3.hideMods || {};
+      d3.lastConsumables = Array.isArray(s3.lastConsumables) ? s3.lastConsumables : [];
+      d3.sel = null;
+      if (typeof d3RenderModToggles === "function") d3RenderModToggles();
+      if (typeof d3Fit === "function") d3Fit();
+      if (typeof d3Save === "function") d3Save();
+      if (typeof d3SelRender === "function") d3SelRender();
+      if (typeof d3TelRender === "function") d3TelRender();
+      if (typeof d3OutRender === "function") d3OutRender();
+      if (typeof d3Status === "function") d3Status();
+      if (typeof d3StatsRender === "function") d3StatsRender();
+      if (typeof d3Draw === "function") d3Draw();
+    }
+
+    setProjectName(name);
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("📂 Mueble cargado en Corte, Materiales y 3D: " + name);
+  }
+
+  // Guardar mueble desde cualquiera de las 3 pestañas
+  function saveUnifiedFurniture(customName){
+    const name = String(customName || getProjectName() || "").trim();
+    if (!name){
+      if (typeof flag === "function") flag("Escribí primero un nombre para el mueble");
+      return;
+    }
+    setProjectName(name);
+    if (typeof saveMat === "function") saveMat();
+
+    // Si en Materiales hay un botón original de guardar, lo disparamos o actualizamos `book`
+    if (typeof book !== "undefined" && Array.isArray(book)){
+      const copyMat = typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : { name, items: [] };
+      const idx = book.findIndex(x => (x.name || "").toLowerCase() === name.toLowerCase());
+      const entryId = idx >= 0 ? book[idx].id : (typeof uid === "function" ? uid() : String(Date.now()));
+      const newEntry = Object.assign({}, idx >= 0 ? book[idx] : {}, copyMat, {
+        id: entryId,
+        name: name,
+        savedAt: new Date().toISOString()
+      });
+      if (idx >= 0) book[idx] = newEntry;
+      else book.unshift(newEntry);
+
+      const map = loadFullMap();
+      const snap = captureCurrentSnapshot(name);
+      map[entryId] = snap;
+      map[name] = snap;
+      saveFullMap(map);
+
+      if (typeof origSaveBook === "function") origSaveBook();
+      if (typeof renderBook === "function") renderBook();
+    }
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("💾 Mueble guardado en las 3 páginas: " + name);
+  }
+
+  function deleteUnifiedFurniture(idOrName){
+    if (!confirm("¿Eliminar este mueble guardado de las 3 páginas?")) return;
+    const map = loadFullMap();
+    if (typeof book !== "undefined" && Array.isArray(book)){
+      const target = book.find(x => x.id === idOrName || x.name === idOrName);
+      if (target){
+        delete map[target.id];
+        delete map[target.name];
+      }
+      const idx = book.findIndex(x => x.id === idOrName || x.name === idOrName);
+      if (idx >= 0) book.splice(idx, 1);
+    }
+    delete map[idOrName];
+    saveFullMap(map);
+    if (typeof origSaveBook === "function") origSaveBook();
+    if (typeof renderBook === "function") renderBook();
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("🗑️ Mueble eliminado");
+  }
+
+  // Interceptar saveBook() original de Materiales para que también guarde Corte y 3D
+  const origSaveBook = window.saveBook;
+  if (typeof origSaveBook === "function"){
+    window.saveBook = function(){
+      origSaveBook.apply(this, arguments);
+      try {
+        if (typeof book !== "undefined" && Array.isArray(book) && book.length){
+          const currentName = getProjectName();
+          const target = book.find(x => x.name === currentName) || book[0];
+          if (target){
+            const map = loadFullMap();
+            const snap = captureCurrentSnapshot(target.name || currentName);
+            map[target.id] = snap;
+            map[target.name] = snap;
+            saveFullMap(map);
+          }
+        }
+      } catch(e){}
+      renderSharedBookLists();
+    };
+  }
+
+  // Interceptar renderBook() original para mantener sincronizadas las 3 páginas
+  const origRenderBook = window.renderBook;
+  if (typeof origRenderBook === "function"){
+    window.renderBook = function(){
+      origRenderBook.apply(this, arguments);
+      renderSharedBookLists();
+    };
+  }
+
+  // Si el usuario carga un mueble desde la lista original de Materiales, cargar también Corte y 3D
+  document.getElementById("viewMat")?.addEventListener("click", e => {
+    const btn = e.target.closest("button[data-id], button[data-act], button[data-book]");
+    if (!btn) return;
+    const txt = (btn.textContent || "").toLowerCase();
+    const act = (btn.dataset.act || btn.dataset.book || "").toLowerCase();
+    const id = btn.dataset.id || btn.closest("[data-id]")?.dataset.id;
+    if (id && (act === "load" || act === "cargar" || txt.includes("cargar") || txt.includes("abrir"))){
+      setTimeout(() => loadUnifiedFurniture(id), 20);
+    }
+  });
+
+  // Crear las tarjetas de Guardado en Plano de Corte y Diseño 3D
+  function injectSharedCards(){
+    const corteSetup = document.querySelector("#viewCorte .setup");
+    if (corteSetup && !document.getElementById("corteBookCard")){
+      const sec = document.createElement("section");
+      sec.className = "card";
+      sec.id = "corteBookCard";
+      sec.innerHTML = `
+        <h2><span class="n">💾</span> Muebles guardados (Corte + Mat + 3D)</h2>
+        <div class="body">
+          <div class="grid g2">
+            <label><span class="lab">Nombre del mueble</span>
+              <input type="text" id="corteBookName" placeholder="Ej: Biblioteca 192x110x35" value="${getProjectName()}">
+            </label>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn primary" id="btnSaveFromCorte" type="button" style="width:100%">💾 Guardar mueble</button>
+            </div>
+          </div>
+          <div id="corteBookList" style="margin-top:10px"></div>
+        </div>`;
+      corteSetup.appendChild(sec);
+    }
+
+    const d3Col = document.querySelector("#viewD3 .output") || document.querySelector("#viewD3 .setup");
+    if (d3Col && !document.getElementById("d3BookCard")){
+      const sec = document.createElement("section");
+      sec.className = "card";
+      sec.id = "d3BookCard";
+      sec.innerHTML = `
+        <h2><span class="n">8</span> Muebles guardados (Corte + Mat + 3D)</h2>
+        <div class="body">
+          <div class="grid g2">
+            <label><span class="lab">Nombre del mueble</span>
+              <input type="text" id="d3BookName" placeholder="Ej: Biblioteca 192x110x35" value="${getProjectName()}">
+            </label>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn primary" id="btnSaveFromD3" type="button" style="width:100%">💾 Guardar mueble</button>
+            </div>
+          </div>
+          <div id="d3BookList" style="margin-top:10px"></div>
+        </div>`;
+      d3Col.appendChild(sec);
+    }
+
+    ["mName", "corteBookName", "d3BookName"].forEach(id => {
+      document.getElementById(id)?.addEventListener("input", e => setProjectName(e.target.value));
+    });
+    document.getElementById("btnSaveFromCorte")?.addEventListener("click", () => {
+      saveUnifiedFurniture(document.getElementById("corteBookName")?.value);
+    });
+    document.getElementById("btnSaveFromD3")?.addEventListener("click", () => {
+      saveUnifiedFurniture(document.getElementById("d3BookName")?.value);
+    });
+  }
+
+  function renderSharedBookLists(){
+    const bList = (typeof book !== "undefined" && Array.isArray(book)) ? book : [];
+    const map = loadFullMap();
+    const html = !bList.length
+      ? '<p class="empty">Todavía no hay muebles guardados.</p>'
+      : bList.map(item => {
+          const snap = map[item.id] || map[item.name] || {};
+          const nCorte = snap.corte && Array.isArray(snap.corte.pieces) ? snap.corte.pieces.length : 0;
+          const nMat = Array.isArray(item.items) ? item.items.length : (snap.mat && Array.isArray(snap.mat.items) ? snap.mat.items.length : 0);
+          const n3D = snap.d3 && Array.isArray(snap.d3.pieces) ? snap.d3.pieces.length : 0;
+          const safeName = typeof esc === "function" ? esc(item.name || "Sin nombre") : (item.name || "Sin nombre");
+          const safeId = typeof esc === "function" ? esc(item.id || item.name) : (item.id || item.name);
+          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--rule);border-radius:var(--r);margin-top:6px;background:var(--panel-2)">
+            <div>
+              <b>${safeName}</b>
+              <div class="hint" style="margin:2px 0 0">Corte: ${nCorte} pz · Mat: ${nMat} ítems · 3D: ${n3D} pz</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="btn quiet" data-uload="${safeId}">📂 Cargar todo</button>
+              <button type="button" class="btn danger" data-udel="${safeId}">✕</button>
+            </div>
+          </div>`;
+        }).join("");
+
+    ["corteBookList", "d3BookList"].forEach(id => {
+      const box = document.getElementById(id);
+      if (box) box.innerHTML = html;
+    });
+  }
+
+  document.addEventListener("click", e => {
+    const ld = e.target.closest("[data-uload]");
+    const dl = e.target.closest("[data-udel]");
+    if (ld) loadUnifiedFurniture(ld.dataset.uload);
+    else if (dl) deleteUnifiedFurniture(dl.dataset.udel);
+  });
+
+  // Sincronizar el nombre cuando se importa un JSON de la IA en 3D
+  const origImportAI = window.d3ImportFromAI;
+  if (typeof origImportAI === "function"){
+    window.d3ImportFromAI = function(){
+      origImportAI.apply(this, arguments);
+      setProjectName(getProjectName());
+    };
+  }
+
+  injectSharedCards();
+  renderSharedBookLists();
+})();
+</script>
 </body>
 </html>
