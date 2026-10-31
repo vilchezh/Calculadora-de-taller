@@ -5726,91 +5726,145 @@ render();
   flag("🚀 Fase 4 instalada: Mantené Shift al arrastrar para deslizar piezas guiadas sobre los perfiles");
 })();
 </script>
-
-   <!-- ================= SCRIPT UNIFICADO: GUARDADO 3 EN 1 + REGLA Y TRAVESAÑOS ================= -->
+   <!-- ====== SISTEMA UNIFICADO (CORTE + MAT + 3D) + REGLA CON BORRADO, MEDIO Y TRAVESAÑOS ====== -->
 <script>
 (function(){
-  const FULL_BOOK_KEY = "taller_full_book_v1";
+  const FULL_BOOK_KEY = "taller_full_book_v2";
 
+  // ---------------- 1. ALMACENAMIENTO UNIFICADO (CORTE + MATERIALES + 3D) ----------------
   function loadFullMap(){
-    try { return JSON.parse(localStorage.getItem(FULL_BOOK_KEY) || "{}"); }
-    catch(e){ return {}; }
-  }
-  function saveFullMap(map){
-    try { localStorage.setItem(FULL_BOOK_KEY, JSON.stringify(map)); }
-    catch(e){}
+    try {
+      const v2 = localStorage.getItem(FULL_BOOK_KEY);
+      if (v2) return JSON.parse(v2);
+      const v1 = localStorage.getItem("taller_full_book_v1");
+      return v1 ? JSON.parse(v1) : {};
+    } catch(e){ return {}; }
   }
 
-  // Sincronizar el nombre del mueble entre las 3 pestañas
-  function getProjectName(){
-    const mInp = document.getElementById("mName");
-    return (mInp && mInp.value.trim()) || (typeof mat !== "undefined" && mat.name && mat.name.trim()) || "";
+  function saveFullMap(map){
+    try {
+      localStorage.setItem(FULL_BOOK_KEY, JSON.stringify(map));
+      localStorage.setItem("taller_full_book_v1", JSON.stringify(map));
+    } catch(e){}
   }
+
+  function getProjectName(){
+    const ids = ["d3BookName", "corteBookName", "mName"];
+    for (const id of ids){
+      const el = document.getElementById(id);
+      if (el && el.value && el.value.trim()) return el.value.trim();
+    }
+    if (typeof mat !== "undefined" && mat && mat.name && mat.name.trim()) return mat.name.trim();
+    return "";
+  }
+
   function setProjectName(val){
     const clean = String(val || "").trim();
-    if (typeof mat !== "undefined") mat.name = clean;
-    ["mName", "corteBookName", "d3BookName"].forEach(id => {
+    if (typeof mat !== "undefined" && mat) mat.name = clean;
+    ["mName", "corteBookName", "d3BookName", "matBookName"].forEach(id => {
       const el = document.getElementById(id);
       if (el && el.value !== clean) el.value = clean;
     });
   }
 
-  // Captura el estado actual de las 3 pestañas (incluyendo piezas y cotas 3D)
   function captureCurrentSnapshot(name){
+    if (typeof d3Save === "function") try { d3Save(); } catch(e){}
+    if (typeof saveMat === "function") try { saveMat(); } catch(e){}
+    if (typeof save === "function") try { save(); } catch(e){}
+
     return {
+      id: "m_" + name.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
       name: name,
       savedAt: new Date().toISOString(),
-      corte: typeof state !== "undefined" ? JSON.parse(JSON.stringify(state)) : null,
-      mat: typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : null,
-      d3: typeof d3 !== "undefined" ? JSON.parse(JSON.stringify({
-        pieces: d3.pieces || [],
-        cotas: d3.cotas || [],
+      corte: (typeof state !== "undefined" && state) ? JSON.parse(JSON.stringify(state)) : null,
+      mat: (typeof mat !== "undefined" && mat) ? JSON.parse(JSON.stringify(mat)) : null,
+      d3: (typeof d3 !== "undefined" && d3) ? JSON.parse(JSON.stringify({
+        pieces: Array.isArray(d3.pieces) ? d3.pieces : [],
+        cotas: Array.isArray(d3.cotas) ? d3.cotas : [],
         cat: d3.cat || {},
         ple: d3.ple || {},
         hideMods: d3.hideMods || {},
-        lastConsumables: d3.lastConsumables || [],
+        lastConsumables: Array.isArray(d3.lastConsumables) ? d3.lastConsumables : [],
         woodTone: d3.woodTone || "paraiso",
         ironTone: d3.ironTone || "negro"
       })) : null
     };
   }
 
-  // Restaura el mueble en Corte, Materiales y Diseño 3D al mismo tiempo
-  function loadUnifiedFurniture(idOrName){
-    const map = loadFullMap();
-    const bList = (typeof book !== "undefined" && Array.isArray(book)) ? book : [];
-    const bItem = bList.find(x => x.id === idOrName || x.name === idOrName);
-    const snap = map[idOrName] || (bItem && (map[bItem.id] || map[bItem.name]));
+  function saveUnifiedFurniture(customName){
+    const name = String(customName || getProjectName() || "").trim();
+    if (!name){
+      if (typeof flag === "function") flag("⚠️ Escribí primero un nombre para el mueble");
+      else alert("Escribí primero un nombre para el mueble.");
+      return;
+    }
 
-    if (!snap && !bItem){
+    setProjectName(name);
+    const snap = captureCurrentSnapshot(name);
+    const map = loadFullMap();
+    map[snap.id] = snap;
+    map[name] = snap;
+    saveFullMap(map);
+
+    // Sincronizar también con el array original `book` de Materiales si existe
+    try {
+      if (typeof book !== "undefined" && Array.isArray(book)){
+        const copyMat = snap.mat ? JSON.parse(JSON.stringify(snap.mat)) : { name, items: [] };
+        const idx = book.findIndex(x => (x.name || "").toLowerCase() === name.toLowerCase());
+        const entryId = idx >= 0 ? book[idx].id : snap.id;
+        const newEntry = Object.assign({}, idx >= 0 ? book[idx] : {}, copyMat, {
+          id: entryId,
+          name: name,
+          savedAt: snap.savedAt
+        });
+        if (idx >= 0) book[idx] = newEntry;
+        else book.unshift(newEntry);
+        map[entryId] = snap;
+        saveFullMap(map);
+        if (typeof origSaveBook === "function") origSaveBook();
+        if (typeof renderBook === "function") renderBook();
+      }
+    } catch(e){}
+
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("💾 Guardado en Corte, Materiales y 3D: " + name);
+  }
+
+  function loadUnifiedFurniture(key){
+    const map = loadFullMap();
+    let snap = map[key];
+
+    if (!snap){
+      const allSnaps = Object.values(map).filter(x => x && typeof x === "object" && x.name);
+      snap = allSnaps.find(x => x.id === key || x.name === key);
+    }
+
+    if (!snap){
       if (typeof flag === "function") flag("No se encontró el mueble guardado");
       return;
     }
 
-    const name = (snap && snap.name) || (bItem && bItem.name) || "Mueble";
+    const name = snap.name || "Mueble";
 
     // 1. Restaurar Plano de Corte
-    if (snap && snap.corte && typeof state !== "undefined"){
+    if (snap.corte && typeof state !== "undefined"){
       Object.assign(state, JSON.parse(JSON.stringify(snap.corte)));
-      if (typeof save === "function") save();
-      if (typeof fillForm === "function") fillForm();
-      if (typeof render === "function") render();
+      if (typeof save === "function") try { save(); } catch(e){}
+      if (typeof fillForm === "function") try { fillForm(); } catch(e){}
+      if (typeof render === "function") try { render(); } catch(e){}
     }
 
-    // 2. Restaurar Cotizador de Materiales
-    if (typeof mat !== "undefined"){
-      const srcMat = (snap && snap.mat) ? snap.mat : bItem;
-      if (srcMat){
-        Object.assign(mat, JSON.parse(JSON.stringify(srcMat)));
-        mat.name = name;
-        if (typeof saveMat === "function") saveMat();
-        if (typeof fillMatForm === "function") fillMatForm();
-        if (typeof renderMat === "function") renderMat();
-      }
+    // 2. Restaurar Materiales
+    if (snap.mat && typeof mat !== "undefined"){
+      Object.assign(mat, JSON.parse(JSON.stringify(snap.mat)));
+      mat.name = name;
+      if (typeof saveMat === "function") try { saveMat(); } catch(e){}
+      if (typeof fillMatForm === "function") try { fillMatForm(); } catch(e){}
+      if (typeof renderMat === "function") try { renderMat(); } catch(e){}
     }
 
-    // 3. Restaurar Diseño 3D (Piezas, Cotas, Módulos)
-    if (snap && snap.d3 && typeof d3 !== "undefined"){
+    // 3. Restaurar Diseño 3D completo
+    if (snap.d3 && typeof d3 !== "undefined"){
       const s3 = JSON.parse(JSON.stringify(snap.d3));
       d3.pieces = Array.isArray(s3.pieces) ? s3.pieces : [];
       d3.cotas = Array.isArray(s3.cotas) ? s3.cotas : [];
@@ -5818,123 +5872,282 @@ render();
       if (s3.ple) d3.ple = Object.assign(d3.ple || {}, s3.ple);
       d3.hideMods = s3.hideMods || {};
       d3.lastConsumables = Array.isArray(s3.lastConsumables) ? s3.lastConsumables : [];
+      if (s3.woodTone) d3.woodTone = s3.woodTone;
+      if (s3.ironTone) d3.ironTone = s3.ironTone;
       d3.sel = null;
-      if (typeof d3RenderModToggles === "function") d3RenderModToggles();
-      if (typeof d3Fit === "function") d3Fit();
-      if (typeof d3Save === "function") d3Save();
-      if (typeof d3SelRender === "function") d3SelRender();
-      if (typeof d3TelRender === "function") d3TelRender();
-      if (typeof d3OutRender === "function") d3OutRender();
-      if (typeof d3Status === "function") d3Status();
-      if (typeof d3StatsRender === "function") d3StatsRender();
-      if (typeof d3Draw === "function") d3Draw();
+
+      if (typeof d3RenderModToggles === "function") try { d3RenderModToggles(); } catch(e){}
+      if (typeof d3Fit === "function") try { d3Fit(); } catch(e){}
+      if (typeof d3Save === "function") try { d3Save(); } catch(e){}
+      if (typeof d3SelRender === "function") try { d3SelRender(); } catch(e){}
+      if (typeof d3TelRender === "function") try { d3TelRender(); } catch(e){}
+      if (typeof d3OutRender === "function") try { d3OutRender(); } catch(e){}
+      if (typeof d3Status === "function") try { d3Status(); } catch(e){}
+      if (typeof d3StatsRender === "function") try { d3StatsRender(); } catch(e){}
+      if (typeof d3Draw === "function") try { d3Draw(); } catch(e){}
     }
 
     setProjectName(name);
     renderSharedBookLists();
-    if (typeof flag === "function") flag("📂 Mueble cargado en Corte, Materiales y 3D: " + name);
+    renderRulerManager();
+    if (typeof flag === "function") flag("📂 Cargado en Corte, Materiales y 3D: " + name);
   }
 
-  // Guardar mueble desde cualquiera de las 3 pestañas
-  function saveUnifiedFurniture(customName){
-    const name = String(customName || getProjectName() || "").trim();
-    if (!name){
-      if (typeof flag === "function") flag("Escribí primero un nombre para el mueble");
-      return;
-    }
-    setProjectName(name);
-    if (typeof saveMat === "function") saveMat();
-
-    if (typeof book !== "undefined" && Array.isArray(book)){
-      const copyMat = typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : { name, items: [] };
-      const idx = book.findIndex(x => (x.name || "").toLowerCase() === name.toLowerCase());
-      const entryId = idx >= 0 ? book[idx].id : (typeof uid === "function" ? uid() : String(Date.now()));
-      const newEntry = Object.assign({}, idx >= 0 ? book[idx] : {}, copyMat, {
-        id: entryId,
-        name: name,
-        savedAt: new Date().toISOString()
-      });
-      if (idx >= 0) book[idx] = newEntry;
-      else book.unshift(newEntry);
-
-      const map = loadFullMap();
-      const snap = captureCurrentSnapshot(name);
-      map[entryId] = snap;
-      map[name] = snap;
-      saveFullMap(map);
-
-      if (typeof origSaveBook === "function") origSaveBook();
-      if (typeof renderBook === "function") renderBook();
-    }
-    renderSharedBookLists();
-    if (typeof flag === "function") flag("💾 Mueble guardado en las 3 páginas: " + name);
-  }
-
-  function deleteUnifiedFurniture(idOrName){
-    if (!confirm("¿Eliminar este mueble guardado de las 3 páginas?")) return;
+  function deleteUnifiedFurniture(key){
+    if (!confirm("¿Eliminar este mueble guardado de las 3 pestañas?")) return;
     const map = loadFullMap();
-    if (typeof book !== "undefined" && Array.isArray(book)){
-      const target = book.find(x => x.id === idOrName || x.name === idOrName);
-      if (target){
-        delete map[target.id];
-        delete map[target.name];
-      }
-      const idx = book.findIndex(x => x.id === idOrName || x.name === idOrName);
-      if (idx >= 0) book.splice(idx, 1);
+    const snap = map[key] || Object.values(map).find(x => x && (x.id === key || x.name === key));
+    if (snap){
+      delete map[snap.id];
+      delete map[snap.name];
     }
-    delete map[idOrName];
+    delete map[key];
     saveFullMap(map);
-    if (typeof origSaveBook === "function") origSaveBook();
-    if (typeof renderBook === "function") renderBook();
+
+    try {
+      if (typeof book !== "undefined" && Array.isArray(book)){
+        const idx = book.findIndex(x => x.id === key || x.name === key || (snap && x.name === snap.name));
+        if (idx >= 0) book.splice(idx, 1);
+        if (typeof origSaveBook === "function") origSaveBook();
+        if (typeof renderBook === "function") renderBook();
+      }
+    } catch(e){}
+
     renderSharedBookLists();
     if (typeof flag === "function") flag("🗑️ Mueble eliminado");
   }
 
-  const origSaveBook = window.saveBook;
-  if (typeof origSaveBook === "function"){
-    window.saveBook = function(){
-      origSaveBook.apply(this, arguments);
-      try {
-        if (typeof book !== "undefined" && Array.isArray(book) && book.length){
-          const currentName = getProjectName();
-          const target = book.find(x => x.name === currentName) || book[0];
-          if (target){
-            const map = loadFullMap();
-            const snap = captureCurrentSnapshot(target.name || currentName);
-            map[target.id] = snap;
-            map[target.name] = snap;
-            saveFullMap(map);
-          }
+  function getUniqueSavedList(){
+    const map = loadFullMap();
+    const byName = new Map();
+
+    // Incluir también lo que hubiera en `book`
+    if (typeof book !== "undefined" && Array.isArray(book)){
+      book.forEach(b => {
+        if (b && b.name){
+          const snap = map[b.id] || map[b.name] || { id: b.id || b.name, name: b.name, mat: b };
+          byName.set(b.name.toLowerCase(), snap);
         }
-      } catch(e){}
-      renderSharedBookLists();
-    };
-  }
-
-  const origRenderBook = window.renderBook;
-  if (typeof origRenderBook === "function"){
-    window.renderBook = function(){
-      origRenderBook.apply(this, arguments);
-      renderSharedBookLists();
-    };
-  }
-
-  // Interceptar clics en Materiales
-  document.getElementById("viewMat")?.addEventListener("click", e => {
-    const btn = e.target.closest("button[data-id], button[data-act], button[data-book]");
-    if (!btn) return;
-    const txt = (btn.textContent || "").toLowerCase();
-    const act = (btn.dataset.act || btn.dataset.book || "").toLowerCase();
-    const id = btn.dataset.id || btn.closest("[data-id]")?.dataset.id;
-    if (id && (act === "load" || act === "cargar" || txt.includes("cargar") || txt.includes("abrir"))){
-      setTimeout(() => loadUnifiedFurniture(id), 20);
+      });
     }
-  });
 
-  // Inyectar tarjetas visuales de guardado en Corte y 3D
-  function injectSharedCards(){
-    const corteSetup = document.querySelector("#viewCorte .setup");
-    if (corteSetup && !document.getElementById("corteBookCard")){
+    Object.values(map).forEach(snap => {
+      if (snap && typeof snap === "object" && snap.name){
+        byName.set(snap.name.toLowerCase(), snap);
+      }
+    });
+
+    return Array.from(byName.values()).sort((a, b) =>
+      String(b.savedAt || "").localeCompare(String(a.savedAt || ""))
+    );
+  }
+
+  function renderSharedBookLists(){
+    const list = getUniqueSavedList();
+    const html = !list.length
+      ? '<p class="empty" style="margin:6px 0;opacity:.75">Todavía no hay muebles guardados.</p>'
+      : list.map(snap => {
+          const nCorte = snap.corte && Array.isArray(snap.corte.pieces) ? snap.corte.pieces.length : 0;
+          const nMat = snap.mat && Array.isArray(snap.mat.items) ? snap.mat.items.length : 0;
+          const n3D = snap.d3 && Array.isArray(snap.d3.pieces) ? snap.d3.pieces.length : 0;
+          const safeName = String(snap.name || "Sin nombre").replace(/[<>&"]/g, "");
+          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--rule, #334);border-radius:6px;margin-top:6px;background:var(--panel-2, rgba(255,255,255,0.03))">
+            <div>
+              <b>${safeName}</b>
+              <div class="hint" style="margin:2px 0 0;font-size:12px;opacity:.8">Corte: ${nCorte} pz · Mat: ${nMat} ítems · 3D: ${n3D} pz</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button type="button" class="btn quiet" data-uload="${safeName}">📂 Cargar 3 en 1</button>
+              <button type="button" class="btn danger" data-udel="${safeName}">✕</button>
+            </div>
+          </div>`;
+        }).join("");
+
+    ["corteBookList", "d3BookList", "matUnifiedBookList"].forEach(id => {
+      const box = document.getElementById(id);
+      if (box) box.innerHTML = html;
+    });
+  }
+
+  // ---------------- 2. REGLA 3D: BORRAR COTAS + PUNTO MEDIO + TRAVESAÑOS ----------------
+  let lastOverlayMarks = []; // Puntos 3D a dibujar sobre la regla activa
+
+  function extractCotaPoints(c){
+    if (!c) return null;
+    if (c.a && c.b) return { p1: c.a, p2: c.b };
+    if (c.p1 && c.p2) return { p1: c.p1, p2: c.p2 };
+    if (Array.isArray(c) && c.length >= 2) return { p1: c[0], p2: c[1] };
+    if (typeof c.x1 === "number" && typeof c.x2 === "number"){
+      return {
+        p1: { x: c.x1, y: c.y1 || 0, z: c.z1 || 0 },
+        p2: { x: c.x2, y: c.y2 || 0, z: c.z2 || 0 }
+      };
+    }
+    return null;
+  }
+
+  function cotaDistanceMm(c){
+    const pts = extractCotaPoints(c);
+    if (!pts) return Number(c && (c.len || c.dist || c.d)) || 0;
+    const dx = (pts.p2.x || 0) - (pts.p1.x || 0);
+    const dy = (pts.p2.y || 0) - (pts.p1.y || 0);
+    const dz = (pts.p2.z || 0) - (pts.p1.z || 0);
+    return Math.round(Math.hypot(dx, dy, dz));
+  }
+
+  function cotaMidpoint(c){
+    const pts = extractCotaPoints(c);
+    if (!pts) return null;
+    return {
+      x: Math.round(((pts.p1.x || 0) + (pts.p2.x || 0)) / 2),
+      y: Math.round(((pts.p1.y || 0) + (pts.p2.y || 0)) / 2),
+      z: Math.round(((pts.p1.z || 0) + (pts.p2.z || 0)) / 2)
+    };
+  }
+
+  function deleteCotaAt(index){
+    if (typeof d3 === "undefined" || !Array.isArray(d3.cotas)) return;
+    if (index === "all") d3.cotas = [];
+    else d3.cotas.splice(index, 1);
+
+    if (typeof d3Save === "function") try { d3Save(); } catch(e){}
+    if (typeof d3TelRender === "function") try { d3TelRender(); } catch(e){}
+    if (typeof d3Draw === "function") try { d3Draw(); } catch(e){}
+    renderRulerManager();
+  }
+
+  function calcularTravesanos(){
+    const spanRaw = parseFloat(document.getElementById("trvSpanMm")?.value) || 1500;
+    const mode = document.getElementById("trvMeasureMode")?.value || "interior";
+    const outerProf = parseFloat(document.getElementById("trvOuterProfMm")?.value) || 20;
+    const count = Math.max(1, parseInt(document.getElementById("trvCount")?.value, 10) || 3);
+    const innerProf = parseFloat(document.getElementById("trvInnerProfMm")?.value) || 20;
+
+    // Si mide de afuera a afuera, descontamos los 2 caños estructurales de las puntas
+    const luzInterior = mode === "exterior" ? (spanRaw - 2 * outerProf) : spanRaw;
+    const medidaExterior = mode === "exterior" ? spanRaw : (spanRaw + 2 * outerProf);
+    const mitadInterior = luzInterior / 2;
+    const mitadExterior = medidaExterior / 2;
+
+    const espacioOcupadoTravesanos = count * innerProf;
+    const espacioLibreTotal = luzInterior - espacioOcupadoTravesanos;
+    const cantidadHuecos = count + 1;
+    const huecoLibre = espacioLibreTotal / cantidadHuecos;
+
+    const box = document.getElementById("trvResultsBox");
+    if (!box) return;
+
+    if (huecoLibre <= 0){
+      box.innerHTML = `<p style="color:#ff6b6b;margin:8px 0">⚠️ Los travesaños (${espacioOcupadoTravesanos} mm) superan la luz interior disponible (${luzInterior} mm).</p>`;
+      return;
+    }
+
+    const filas = [];
+    let cursorInterior = huecoLibre;
+    lastOverlayMarks = [];
+
+    for (let i = 1; i <= count; i++){
+      const empiezaInt = cursorInterior;
+      const centroInt = cursorInterior + innerProf / 2;
+      const terminaInt = cursorInterior + innerProf;
+      const empiezaExt = outerProf + empiezaInt;
+      const centroExt = outerProf + centroInt;
+
+      filas.push({
+        idx: i,
+        empiezaInt: Math.round(empiezaInt * 10) / 10,
+        centroInt: Math.round(centroInt * 10) / 10,
+        terminaInt: Math.round(terminaInt * 10) / 10,
+        empiezaExt: Math.round(empiezaExt * 10) / 10,
+        centroExt: Math.round(centroExt * 10) / 10,
+        ratioInterior: centroInt / luzInterior
+      });
+
+      cursorInterior += innerProf + huecoLibre;
+    }
+
+    const fmtMmCm = (mm) => `<b>${Math.round(mm * 10) / 10} mm</b> <span style="opacity:.75">(${(mm / 10).toFixed(1)} cm)</span>`;
+
+    box.innerHTML = `
+      <div style="padding:10px;border:1px solid var(--rule, #334);border-radius:6px;background:rgba(117,146,126,0.08);margin-top:8px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;font-size:13px">
+          <div>📏 <b>Luz Interior Libre:</b><br>${fmtMmCm(luzInterior)}</div>
+          <div>📐 <b>Total Exterior (con 2 caños de ${outerProf}mm):</b><br>${fmtMmCm(medidaExterior)}</div>
+          <div>🎯 <b>Centro / Mitad Exacta:</b><br>Desde interior: ${fmtMmCm(mitadInterior)}<br><span style="font-size:11px;opacity:.8">Desde exterior: ${Math.round(mitadExterior * 10) / 10} mm</span></div>
+          <div>🟩 <b>Luz libre entre travesaños (${cantidadHuecos} huecos):</b><br>${fmtMmCm(huecoLibre)}</div>
+        </div>
+
+        <div style="margin-top:10px;overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;text-align:left">
+            <thead>
+              <tr style="border-bottom:1px solid var(--rule, #445);opacity:.85">
+                <th style="padding:5px">Travesaño (${innerProf}mm)</th>
+                <th style="padding:5px">Midiendo desde el INTERIOR (cara interna)</th>
+                <th style="padding:5px">Centro del caño (Int.)</th>
+                <th style="padding:5px">Midiendo desde el EXTERIOR</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filas.map(f => `
+                <tr style="border-bottom:1px dashed rgba(255,255,255,0.08)">
+                  <td style="padding:6px 5px"><b>#${f.idx}</b></td>
+                  <td style="padding:6px 5px">Empieza a <b>${f.empiezaInt} mm</b> (${(f.empiezaInt/10).toFixed(1)} cm) → termina a <b>${f.terminaInt} mm</b></td>
+                  <td style="padding:6px 5px">🎯 <b>${f.centroInt} mm</b> (${(f.centroInt/10).toFixed(1)} cm)</td>
+                  <td style="padding:6px 5px;opacity:.85">Borde: ${f.empiezaExt} mm · Centro: ${f.centroExt} mm</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderRulerManager(){
+    const listBox = document.getElementById("d3CotasManagerList");
+    if (!listBox) return;
+
+    const cotas = (typeof d3 !== "undefined" && Array.isArray(d3.cotas)) ? d3.cotas : [];
+    if (!cotas.length){
+      listBox.innerHTML = `<p class="empty" style="margin:6px 0;opacity:.75">No hay acotaciones activas en el visor 3D. Medí dos puntos con la regla para ver su mitad exacta o pasar la medida a los travesaños.</p>`;
+      return;
+    }
+
+    listBox.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:12px;opacity:.85">Acotaciones en pantalla (${cotas.length})</span>
+        <button type="button" class="btn danger" data-delcota="all" style="padding:3px 8px;font-size:11px">🗑️ Borrar todas las cotas</button>
+      </div>
+      ${cotas.map((c, idx) => {
+        const dist = cotaDistanceMm(c);
+        const half = Math.round((dist / 2) * 10) / 10;
+        const mid = cotaMidpoint(c);
+        const midTxt = mid ? ` · Punto medio 3D: (${mid.x}, ${mid.y}, ${mid.z})` : "";
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 9px;border:1px solid var(--rule, #334);border-radius:6px;margin-top:5px;background:var(--panel-2, rgba(255,255,255,0.03));font-size:12px">
+          <div>
+            <b>Cota #${idx + 1}: ${dist} mm</b> (${(dist/10).toFixed(1)} cm)
+            <div style="opacity:.85;margin-top:2px">🎯 <b>Mitad: ${half} mm</b> (${(half/10).toFixed(2)} cm)${midTxt}</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            <button type="button" class="btn quiet" data-usecota="${dist}" style="padding:4px 8px;font-size:11px">📐 Usar en Travesaños</button>
+            <button type="button" class="btn danger" data-delcota="${idx}" title="Eliminar esta acotación" style="padding:4px 8px;font-size:11px">✕</button>
+          </div>
+        </div>`;
+      }).join("")}
+    `;
+  }
+
+  // ---------------- 3. INYECCIÓN DE TARJETAS EN LAS 3 VISTAS ----------------
+  function findContainer(viewId){
+    const root = document.getElementById(viewId);
+    if (!root) return null;
+    return root.querySelector(".setup") || root.querySelector(".output") || root.querySelector("aside") || root;
+  }
+
+  function injectUI(){
+    // Tarjeta en Plano de Corte
+    const corteCol = findContainer("viewCorte");
+    if (corteCol && !document.getElementById("corteBookCard")){
       const sec = document.createElement("section");
       sec.className = "card";
       sec.id = "corteBookCard";
@@ -5946,20 +6159,43 @@ render();
               <input type="text" id="corteBookName" placeholder="Ej: Biblioteca 192x110x35" value="${getProjectName()}">
             </label>
             <div style="display:flex;align-items:flex-end">
-              <button class="btn primary" id="btnSaveFromCorte" type="button" style="width:100%">💾 Guardar mueble</button>
+              <button class="btn primary" id="btnSaveFromCorte" type="button" style="width:100%">💾 Guardar 3 en 1</button>
             </div>
           </div>
           <div id="corteBookList" style="margin-top:10px"></div>
         </div>`;
-      corteSetup.appendChild(sec);
+      corteCol.appendChild(sec);
     }
 
-    const d3Col = document.querySelector("#viewD3 .output") || document.querySelector("#viewD3 .setup");
-    if (d3Col && !document.getElementById("d3BookCard")){
+    // Tarjeta en Materiales (respaldo sincronizado)
+    const matCol = findContainer("viewMat");
+    if (matCol && !document.getElementById("matUnifiedBookCard")){
       const sec = document.createElement("section");
       sec.className = "card";
-      sec.id = "d3BookCard";
+      sec.id = "matUnifiedBookCard";
       sec.innerHTML = `
+        <h2><span class="n">💾</span> Guardado Unificado (Corte + Mat + 3D)</h2>
+        <div class="body">
+          <div class="grid g2">
+            <label><span class="lab">Nombre del mueble</span>
+              <input type="text" id="matBookName" placeholder="Ej: Biblioteca 192x110x35" value="${getProjectName()}">
+            </label>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn primary" id="btnSaveFromMatUnified" type="button" style="width:100%">💾 Guardar 3 en 1</button>
+            </div>
+          </div>
+          <div id="matUnifiedBookList" style="margin-top:10px"></div>
+        </div>`;
+      matCol.appendChild(sec);
+    }
+
+    // Tarjetas en Diseño 3D: Guardado + Regla y Travesaños
+    const d3Col = findContainer("viewD3");
+    if (d3Col && !document.getElementById("d3BookCard")){
+      const secBook = document.createElement("section");
+      secBook.className = "card";
+      secBook.id = "d3BookCard";
+      secBook.innerHTML = `
         <h2><span class="n">💾</span> Muebles guardados (Corte + Mat + 3D)</h2>
         <div class="body">
           <div class="grid g2">
@@ -5967,105 +6203,142 @@ render();
               <input type="text" id="d3BookName" placeholder="Ej: Biblioteca 192x110x35" value="${getProjectName()}">
             </label>
             <div style="display:flex;align-items:flex-end">
-              <button class="btn primary" id="btnSaveFromD3" type="button" style="width:100%">💾 Guardar mueble</button>
+              <button class="btn primary" id="btnSaveFromD3" type="button" style="width:100%">💾 Guardar 3 en 1</button>
             </div>
           </div>
           <div id="d3BookList" style="margin-top:10px"></div>
         </div>`;
-      d3Col.appendChild(sec);
+      d3Col.appendChild(secBook);
     }
 
-    ["mName", "corteBookName", "d3BookName"].forEach(id => {
+    if (d3Col && !document.getElementById("d3RulerTravesanosCard")){
+      const secRuler = document.createElement("section");
+      secRuler.className = "card";
+      secRuler.id = "d3RulerTravesanosCard";
+      secRuler.innerHTML = `
+        <h2><span class="n">📏</span> Regla 3D: Acotaciones, Mitad y Distribución de Travesaños</h2>
+        <div class="body">
+          <div id="d3CotasManagerList" style="margin-bottom:12px"></div>
+
+          <div style="border-top:1px solid var(--rule, #334);padding-top:10px">
+            <b style="display:block;margin-bottom:8px">Calculador de Travesaños y Centro (Ej: 3 travesaños en 150 cm)</b>
+            <div class="grid g2" style="gap:8px">
+              <label><span class="lab">Medida tomada / total (mm)</span>
+                <input type="number" id="trvSpanMm" value="1500" step="1">
+              </label>
+              <label><span class="lab">¿Cómo tomaste la medida?</span>
+                <select id="trvMeasureMode">
+                  <option value="interior">Desde el INTERIOR (cara interna entre caños)</option>
+                  <option value="exterior" selected>EXTERIOR total (descontar los 2 caños de punta)</option>
+                </select>
+              </label>
+              <label><span class="lab">Caños de la estructura original (mm)</span>
+                <input type="number" id="trvOuterProfMm" value="20" step="1" title="Ancho de cada uno de los 2 perfiles de los extremos">
+              </label>
+              <label><span class="lab">Cantidad de travesaños a poner</span>
+                <input type="number" id="trvCount" value="3" min="1" max="30" step="1">
+              </label>
+              <label><span class="lab">Ancho de cada travesaño (mm)</span>
+                <input type="number" id="trvInnerProfMm" value="20" step="1" title="Ej: 20 para perfil 20x20">
+              </label>
+              <div style="display:flex;align-items:flex-end">
+                <button type="button" class="btn quiet" id="btnTakeLastRuler" style="width:100%">📏 Tomar última medida de la regla</button>
+              </div>
+            </div>
+            <div id="trvResultsBox"></div>
+          </div>
+        </div>`;
+      d3Col.appendChild(secRuler);
+    }
+
+    // Eventos de nombres y botones de guardado
+    ["mName", "corteBookName", "d3BookName", "matBookName"].forEach(id => {
       document.getElementById(id)?.addEventListener("input", e => setProjectName(e.target.value));
     });
-    document.getElementById("btnSaveFromCorte")?.addEventListener("click", () => {
-      saveUnifiedFurniture(document.getElementById("corteBookName")?.value);
-    });
-    document.getElementById("btnSaveFromD3")?.addEventListener("click", () => {
-      saveUnifiedFurniture(document.getElementById("d3BookName")?.value);
-    });
-  }
+    document.getElementById("btnSaveFromCorte")?.addEventListener("click", () => saveUnifiedFurniture(document.getElementById("corteBookName")?.value));
+    document.getElementById("btnSaveFromD3")?.addEventListener("click", () => saveUnifiedFurniture(document.getElementById("d3BookName")?.value));
+    document.getElementById("btnSaveFromMatUnified")?.addEventListener("click", () => saveUnifiedFurniture(document.getElementById("matBookName")?.value));
 
-  function renderSharedBookLists(){
-    const bList = (typeof book !== "undefined" && Array.isArray(book)) ? book : [];
-    const map = loadFullMap();
-    const html = !bList.length
-      ? '<p class="empty">Todavía no hay muebles guardados.</p>'
-      : bList.map(item => {
-          const snap = map[item.id] || map[item.name] || {};
-          const nCorte = snap.corte && Array.isArray(snap.corte.pieces) ? snap.corte.pieces.length : 0;
-          const nMat = Array.isArray(item.items) ? item.items.length : (snap.mat && Array.isArray(snap.mat.items) ? snap.mat.items.length : 0);
-          const n3D = snap.d3 && Array.isArray(snap.d3.pieces) ? snap.d3.pieces.length : 0;
-          const safeName = typeof esc === "function" ? esc(item.name || "Sin nombre") : (item.name || "Sin nombre");
-          const safeId = typeof esc === "function" ? esc(item.id || item.name) : (item.id || item.name);
-          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--rule);border-radius:var(--r);margin-top:6px;background:var(--panel-2)">
-            <div>
-              <b>${safeName}</b>
-              <div class="hint" style="margin:2px 0 0">Corte: ${nCorte} pz · Mat: ${nMat} ítems · 3D: ${n3D} pz</div>
-            </div>
-            <div style="display:flex;gap:6px;flex-wrap:wrap">
-              <button type="button" class="btn quiet" data-uload="${safeId}">📂 Cargar todo</button>
-              <button type="button" class="btn danger" data-udel="${safeId}">✕</button>
-            </div>
-          </div>`;
-        }).join("");
+    // Eventos del calculador de travesaños
+    ["trvSpanMm", "trvMeasureMode", "trvOuterProfMm", "trvCount", "trvInnerProfMm"].forEach(id => {
+      document.getElementById(id)?.addEventListener("input", calcularTravesanos);
+      document.getElementById(id)?.addEventListener("change", calcularTravesanos);
+    });
 
-    ["corteBookList", "d3BookList"].forEach(id => {
-      const box = document.getElementById(id);
-      if (box) box.innerHTML = html;
+    document.getElementById("btnTakeLastRuler")?.addEventListener("click", () => {
+      if (typeof d3 !== "undefined" && Array.isArray(d3.cotas) && d3.cotas.length){
+        const last = d3.cotas[d3.cotas.length - 1];
+        const dist = cotaDistanceMm(last);
+        if (dist > 0){
+          document.getElementById("trvSpanMm").value = dist;
+          document.getElementById("trvMeasureMode").value = "interior";
+          calcularTravesanos();
+          if (typeof flag === "function") flag("📏 Medida interior cargada desde la regla: " + dist + " mm");
+        }
+      } else {
+        if (typeof flag === "function") flag("Medí primero dos puntos con la regla 3D");
+      }
     });
   }
 
+  // ---------------- 4. ENGANCHES CON LA CALCULADORA ORIGINAL ----------------
+  const origSaveBook = window.saveBook;
+  if (typeof origSaveBook === "function"){
+    window.saveBook = function(){
+      origSaveBook.apply(this, arguments);
+      const n = getProjectName();
+      if (n) saveUnifiedFurniture(n);
+    };
+  }
+
+  const origTelRender = window.d3TelRender;
+  if (typeof origTelRender === "function"){
+    window.d3TelRender = function(){
+      origTelRender.apply(this, arguments);
+      renderRulerManager();
+    };
+  }
+
+  const origD3Draw = window.d3Draw;
+  if (typeof origD3Draw === "function"){
+    window.d3Draw = function(){
+      origD3Draw.apply(this, arguments);
+      renderRulerManager();
+    };
+  }
+
+  // Delegación global de clics para Cargar/Borrar muebles y Borrar/Usar cotas
   document.addEventListener("click", e => {
     const ld = e.target.closest("[data-uload]");
+    if (ld){ loadUnifiedFurniture(ld.dataset.uload); return; }
+
     const dl = e.target.closest("[data-udel]");
-    if (ld) loadUnifiedFurniture(ld.dataset.uload);
-    else if (dl) deleteUnifiedFurniture(dl.dataset.udel);
+    if (dl){ deleteUnifiedFurniture(dl.dataset.udel); return; }
+
+    const delCota = e.target.closest("[data-delcota]");
+    if (delCota){
+      const val = delCota.dataset.delcota;
+      deleteCotaAt(val === "all" ? "all" : parseInt(val, 10));
+      return;
+    }
+
+    const useCota = e.target.closest("[data-usecota]");
+    if (useCota){
+      const dist = parseFloat(useCota.dataset.usecota) || 0;
+      const inp = document.getElementById("trvSpanMm");
+      const sel = document.getElementById("trvMeasureMode");
+      if (inp && dist > 0){
+        inp.value = dist;
+        if (sel) sel.value = "interior";
+        calcularTravesanos();
+      }
+    }
   });
 
-  // ================= MEJORAS DE REGLA Y CÁLCULO DE TRAVESAÑOS =================
-  if (typeof d3 !== 'undefined') {
-    // Función para borrar cotas de la regla 3D individualmente
-    d3.removeCota = function(index) {
-      if (Array.isArray(d3.cotas) && d3.cotas[index] !== undefined) {
-        d3.cotas.splice(index, 1);
-        if (typeof d3Save === 'function') d3Save();
-        if (typeof d3Draw === 'function') d3Draw();
-        if (typeof d3TelRender === 'function') d3TelRender();
-      }
-    };
-
-    // Función para calcular la distribución de travesaños desde el interior (Ej: 3 travesaños en 150cm con perfiles de 20x20)
-    d3.calcularDistribucionTravesanos = function(longitudTotalMm, cantidadTravesanos, anchoPerfilMm) {
-      const espacioPerfiles = cantidadTravesanos * anchoPerfilMm;
-      const espacioLibreTotal = longitudTotalMm - espacioPerfiles;
-      const cantidadHuecos = cantidadTravesanos + 1;
-      const distanciaHueco = espacioLibreTotal / cantidadHuecos;
-
-      let acumulado = distanciaHueco;
-      const posiciones = [];
-
-      for (let i = 0; i < cantidadTravesanos; i++) {
-        posiciones.push({
-          travesaño: i + 1,
-          bordeInternoDesdeInicio: Math.round(acumulado),
-          centroPerfil: Math.round(acumulado + (anchoPerfilMm / 2))
-        });
-        acumulado += anchoPerfilMm + distanciaHueco;
-      }
-
-      return {
-        longitudTotal: longitudTotalMm,
-        anchoPerfil: anchoPerfilMm,
-        cantidad: cantidadTravesanos,
-        espacioLibreEntreHornos: Math.round(distanciaHueco),
-        posiciones: posiciones
-      };
-    };
-  }
-
-  injectSharedCards();
+  injectUI();
   renderSharedBookLists();
+  renderRulerManager();
+  calcularTravesanos();
 })();
 </script>
 </body>
