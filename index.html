@@ -5844,7 +5844,6 @@ render();
     setProjectName(name);
     if (typeof saveMat === "function") saveMat();
 
-    // Si en Materiales hay un botón original de guardar, lo disparamos o actualizamos `book`
     if (typeof book !== "undefined" && Array.isArray(book)){
       const copyMat = typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : { name, items: [] };
       const idx = book.findIndex(x => (x.name || "").toLowerCase() === name.toLowerCase());
@@ -5890,7 +5889,6 @@ render();
     if (typeof flag === "function") flag("🗑️ Mueble eliminado");
   }
 
-  // Interceptar saveBook() original de Materiales para que también guarde Corte y 3D
   const origSaveBook = window.saveBook;
   if (typeof origSaveBook === "function"){
     window.saveBook = function(){
@@ -5912,7 +5910,6 @@ render();
     };
   }
 
-  // Interceptar renderBook() original para mantener sincronizadas las 3 páginas
   const origRenderBook = window.renderBook;
   if (typeof origRenderBook === "function"){
     window.renderBook = function(){
@@ -5921,7 +5918,6 @@ render();
     };
   }
 
-  // Si el usuario carga un mueble desde la lista original de Materiales, cargar también Corte y 3D
   document.getElementById("viewMat")?.addEventListener("click", e => {
     const btn = e.target.closest("button[data-id], button[data-act], button[data-book]");
     if (!btn) return;
@@ -5933,7 +5929,6 @@ render();
     }
   });
 
-  // Crear las tarjetas de Guardado en Plano de Corte y Diseño 3D
   function injectSharedCards(){
     const corteSetup = document.querySelector("#viewCorte .setup");
     if (corteSetup && !document.getElementById("corteBookCard")){
@@ -5962,7 +5957,7 @@ render();
       sec.className = "card";
       sec.id = "d3BookCard";
       sec.innerHTML = `
-        <h2><span class="n">8</span> Muebles guardados (Corte + Mat + 3D)</h2>
+        <h2><span class="n">💾</span> Muebles guardados (Corte + Mat + 3D)</h2>
         <div class="body">
           <div class="grid g2">
             <label><span class="lab">Nombre del mueble</span>
@@ -6025,7 +6020,6 @@ render();
     else if (dl) deleteUnifiedFurniture(dl.dataset.udel);
   });
 
-  // Sincronizar el nombre cuando se importa un JSON de la IA en 3D
   const origImportAI = window.d3ImportFromAI;
   if (typeof origImportAI === "function"){
     window.d3ImportFromAI = function(){
@@ -6038,5 +6032,6 @@ render();
   renderSharedBookLists();
 })();
 </script>
+```[cite: 2]
 </body>
 </html>
