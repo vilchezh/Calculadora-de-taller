@@ -1416,7 +1416,8 @@ function load(){
           name: String(p.name || "Pieza"),
           l: +p.l || 0, w: +p.w || 0,
           qty: Math.max(1, Math.round(+p.qty) || 1),
-          grain: !!p.grain
+          grain: !!p.grain,
+          ...(p.from3d ? { from3d: true } : {})
         }))
       };
     }
@@ -1433,11 +1434,11 @@ function save(){
     }
   }, 250);
 }
-function flag(txt){
+function flag(txt, ms){
   const el = document.getElementById("saved");
   el.textContent = txt;
   clearTimeout(flag._t);
-  flag._t = setTimeout(() => { el.textContent = ""; }, 1600);
+  flag._t = setTimeout(() => { el.textContent = ""; }, ms || 1600);
 }
 
 function loadMat(){
@@ -3635,15 +3636,25 @@ function d3SanitizePiece(p){
     out.wall = numOr(out.wall, 1.6, 0.5);
     out.len = numOr(out.len, 500, 1);
   } else if (out.kind === "plegada"){
+    /* lo que llega de afuera (p. ej. un JSON de IA) se fuerza a plantilla válida y a números:
+       varios de estos campos se muestran en pantalla como HTML */
+    out.tmpl = D3_TMPL[out.tmpl] ? out.tmpl : "L";
+    out.t = numOr(out.t, 1.2, 0.3, 4);
+    if (out.L !== undefined) out.L = numOr(out.L, 500, 1);
+    if (out.r !== undefined) out.r = numOr(out.r, out.t, 0);
+    if (out.K !== undefined) out.K = numOr(out.K, 0.4, 0, 1);
+    if (Array.isArray(out.dims)) out.dims = out.dims.map(v => numOr(v, 0, 0));
     if (!Array.isArray(out.segs) || !out.segs.length){
-      const tmpl = D3_TMPL[out.tmpl] ? out.tmpl : "L";
       const dims = Array.isArray(out.dims) && out.dims.length >= 2 ? out.dims : [80, 40, 40];
-      const t = numOr(out.t, 1.2, 0.3, 4);
       const L = numOr(out.L, 500, 1);
-      const r = numOr(out.r, t, 0);
+      const r = numOr(out.r, out.t, 0);
       const K = numOr(out.K, 0.4, 0, 1);
-      const res = d3Plegada(tmpl, dims, t, L, r, K);
+      const res = d3Plegada(out.tmpl, dims, out.t, L, r, K);
       out.segs = res.segs; out.devA = res.devA; out.devB = res.devB; out.bends = res.bends;
+    } else {
+      out.segs = out.segs.map(g => { g = g || {}; return { x: numOr(g.x, 0), y: numOr(g.y, 0), z: numOr(g.z, 0), dx: numOr(g.dx, 0, 0), dy: numOr(g.dy, 0, 0), dz: numOr(g.dz, 0, 0) }; });
+      out.devA = numOr(out.devA, 0, 0); out.devB = numOr(out.devB, 0, 0);
+      out.bends = Math.round(numOr(out.bends, 0, 0));
     }
   }
   if (!out.name) out.name = d3DefaultName(out);
@@ -3800,17 +3811,19 @@ function d3Plegada(tmpl, dims, t, L, r, K){
     if (Math.min(c1, c2, H) < 4*t) warns.push("Pestaña corta: se recomienda 4 a 6 veces el espesor");
   } else if (tmpl === "Z"){
     const [A, H] = dims;
-    segs = [{x:t,y:0,z:0,dx:A,dy:t,dz:L}, {x:0,y:0,z:0,dx:t,dy:H,dz:L}, {x:t,y:H-t,z:0,dx:A,dy:t,dz:L}];
+    /* Z: ala inferior hacia +X y ala superior hacia -X (ancho total 2A−t) */
+    segs = [{x:A-t,y:0,z:0,dx:A,dy:t,dz:L}, {x:A-t,y:0,z:0,dx:t,dy:H,dz:L}, {x:0,y:H-t,z:0,dx:A,dy:t,dz:L}];
     devA = Math.max(0, 2*A + H - 2*BD);
     if (Math.min(A, H) < 4*t) warns.push("Pestaña corta: se recomienda 4 a 6 veces el espesor");
   } else {                                   /* bandeja */
     const [W, h] = dims;
+    const hw = Math.max(0, h - t);       /* alto exterior = h: la pared descuenta el espesor del fondo */
     segs = [
       {x:0,y:0,z:0,dx:W,dy:t,dz:L},           /* fondo */
-      {x:0,y:t,z:0,dx:t,dy:h,dz:L},           /* pared izq. */
-      {x:W-t,y:t,z:0,dx:t,dy:h,dz:L},         /* pared der. */
-      {x:0,y:t,z:0,dx:W,dy:h,dz:t},           /* frente */
-      {x:0,y:t,z:L-t,dx:W,dy:h,dz:t}          /* fondo trasero */
+      {x:0,y:t,z:0,dx:t,dy:hw,dz:L},           /* pared izq. */
+      {x:W-t,y:t,z:0,dx:t,dy:hw,dz:L},         /* pared der. */
+      {x:0,y:t,z:0,dx:W,dy:hw,dz:t},           /* frente */
+      {x:0,y:t,z:L-t,dx:W,dy:hw,dz:t}          /* fondo trasero */
     ];
     devA = Math.max(0, W + 2*(h - BD));
     warns.push("Esquinas aproximadas: cortá alivios de ~" + mmv(h) + "×" + mmv(h) + " mm en las cuatro esquinas del desarrollo");
@@ -4287,11 +4300,10 @@ function d3Magnet(p, pos){
   const out = { x: pos.x, y: pos.y, z: pos.z, snaps: [] };
   if (!d3.magnet) return out;
   const cap = Math.max(1, +d3.capture || 8);
-  const D = d3Dims(p);
   for (const axis of ["x", "y", "z"]){
-    const size = axis === "x" ? D[0] : axis === "y" ? D[1] : D[2];
-    const at = out[axis];
-    const mine = [at, at + size, at + size / 2];
+    /* bordes y centro REALES de la pieza (con su giro) en la posición que se está probando */
+    const a0 = d3AABB(Object.assign({}, p, { x: out.x, y: out.y, z: out.z }));
+    const mine = axis === "x" ? [a0.x1, a0.x2, a0.cx] : axis === "y" ? [a0.y1, a0.y2, a0.cy] : [a0.z1, a0.z2, a0.cz];
     const kinds = ["ras", "ras", "centro"];
     let bestDelta = cap + 1, best = null;
     for (const q of d3.pieces){
@@ -4694,7 +4706,7 @@ function d3TelRender(){
 function d3CutRows(){
   const groups = [];
   for (const p of d3.pieces){
-    const key = JSON.stringify([p.kind, p.name, p.l, p.w, p.t, p.len, p.profId, p.wall, p.axis, p.rot, p.tmpl, p.devA, p.devB]);
+    const key = JSON.stringify([p.kind, p.name, p.l, p.w, p.t, p.len, p.profId, p.wall, p.axis, p.rot, p.tmpl, p.devA, p.devB, p.corte1 || 0, p.corte2 || 0]);
     const g = groups.find(g => g.key === key);
     if (g) g.qty++; else groups.push({ key, p, qty: 1 });
   }
@@ -4749,41 +4761,59 @@ function d3SendCorte(){
   const woods = d3.pieces.filter(p => p.kind === "madera" && !p._sent);
   const sheets = d3.pieces.filter(p => (p.kind === "chapa" || p.kind === "plegada") && !p._sent);
   if (!woods.length && !sheets.length){ flag("Nada nuevo para mandar: tocá «Reenviar todo» si querés repetir"); return; }
-  let added = 0, thickWarn = false;
 
-  if (woods.length){
-    const thick = new Set(woods.map(p => String(p.t)));
+  /* El Plano de corte trabaja con UN solo material (madera o chapa) y un solo tablero: no se
+     mezclan. Se manda el grupo que coincide con el material del Plano y el otro queda pendiente.
+     Si el Plano está vacío, se adapta al material que haya para mandar. */
+  const pend = { wood: woods, metal: sheets };
+  let plan = state.cut.material === "metal" ? "metal" : "wood";
+  if (!state.pieces.length && !pend[plan].length) plan = plan === "metal" ? "wood" : "metal";
+  const otro = plan === "metal" ? "wood" : "metal";
+  const toSend = pend[plan], held = pend[otro];
+  const nom = m => m === "metal" ? "chapa" : "madera";
+  if (!toSend.length){
+    flag("El Plano ya tiene piezas de " + nom(plan) + ": las " + held.length + " de " + nom(otro) +
+         " quedan pendientes (un Plano = un material). Vaciá el Plano para mandarlas.", 6000);
+    return;
+  }
+  let added = 0, thickWarn = false;
+  state.cut.material = plan;
+
+  if (plan === "wood"){
+    const thick = new Set(toSend.map(p => String(p.t)));
     if (thick.size === 1) state.board.thick = +[...thick][0];
     else thickWarn = true;
-    for (const p of woods){
-      const ex = state.pieces.find(q => q.name === p.name && q.l === p.l && q.w === p.w && !q.grain);
+    for (const p of toSend){
+      const ex = state.pieces.find(q => q.from3d && q.name === p.name && q.l === p.l && q.w === p.w && !q.grain);
       if (ex) ex.qty += 1;
-      else state.pieces.push({ id: uid(), name: p.name, l: p.l, w: p.w, qty: 1, grain: false });
+      else state.pieces.push({ id: uid(), name: p.name, l: p.l, w: p.w, qty: 1, grain: false, from3d: true });
       p._sent = true; added++;
     }
-  }
-
-  if (sheets.length){
-    state.cut.material = "metal";
+  } else {
     if (!state.cut.metalType) state.cut.metalType = "acero";
-    const thick = new Set(sheets.map(p => String(p.t)));
+    const thick = new Set(toSend.map(p => String(p.t)));
     if (thick.size === 1) state.board.thick = +[...thick][0];
     let bendsAdded = 0;
-    for (const p of sheets){
+    for (const p of toSend){
       const l = p.kind === "plegada" ? p.devA : p.l;
       const w = p.kind === "plegada" ? p.devB : p.w;
       const nm = p.kind === "plegada" ? p.name + " — desarrollo" : p.name;
-      const ex = state.pieces.find(q => q.name === nm && q.l === l && q.w === w);
+      const ex = state.pieces.find(q => q.from3d && q.name === nm && q.l === l && q.w === w);
       if (ex) ex.qty += 1;
-      else state.pieces.push({ id: uid(), name: nm, l, w, qty: 1, grain: false });
+      else state.pieces.push({ id: uid(), name: nm, l, w, qty: 1, grain: false, from3d: true });
       if (p.kind === "plegada") bendsAdded += p.bends || 0;
       p._sent = true; added++;
     }
-    if (bendsAdded) state.cut.bends = (state.cut.bends || 0) + bendsAdded;
+    if (bendsAdded){
+      state.cut.bends = (state.cut.bends || 0) + bendsAdded;
+      state.cut.bends3d = (state.cut.bends3d || 0) + bendsAdded;   /* lo que aportó el 3D, para poder rehacerlo */
+    }
   }
-  save(); render();
+  fillForm(); save(); render();
   d3OutRender(); d3Save();
-  flag(added + " pieza(s) mandada(s) al Plano de corte" + (thickWarn ? " · ojo: espesores distintos, el Plano usa uno solo" : ""));
+  flag(added + " pieza(s) mandada(s) al Plano de corte" + (thickWarn ? " · ojo: espesores distintos, el Plano usa uno solo" : "") +
+       (held.length ? " · " + held.length + " de " + nom(otro) + " quedan pendientes (el Plano usa un solo material)" : ""),
+       held.length ? 6000 : undefined);
 }
 
 /* mandar perfiles al Cotizador de materiales */
@@ -4803,6 +4833,7 @@ function d3SendMat(){
     const pr = d3Prof(pid);
     const c = d3CatGet(pid, parseFloat(wall));
     mat.items.push(sanitizeMatItem({
+      from3d: true,
       kind: "barra",
       name: pr.name + " ×" + wall + " — " + g.cuts.length + " corte" + (g.cuts.length === 1 ? "" : "s"),
       price: c.price, barLen: c.barLen, need: Math.round(g.need),
@@ -5257,8 +5288,12 @@ function d3ExportGLB(){
 }
 
 function d3RecalcAllFrom3D(){
-  state.pieces = [];
-  mat.items = [];
+  /* Solo se rehace lo que vino del diseño 3D: lo cargado a mano en el Plano de corte y en
+     Materiales (y los dobleces puestos a mano) se conserva. */
+  state.pieces = state.pieces.filter(p => !p.from3d);
+  state.cut.bends = Math.max(0, (state.cut.bends || 0) - (state.cut.bends3d || 0));
+  state.cut.bends3d = 0;
+  mat.items = mat.items.filter(it => !it.from3d);
   d3.pieces.forEach(p => {
     const hidden = p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod];
     p._sent = !!(p.hw || hidden);
@@ -5268,7 +5303,7 @@ function d3RecalcAllFrom3D(){
   if (Array.isArray(d3.lastConsumables)){
     d3.lastConsumables.forEach(c => {
       if (c.mod && c.mod !== "base" && d3.hideMods && d3.hideMods[c.mod]) return;
-      mat.items.push(sanitizeMatItem(c));
+      mat.items.push(sanitizeMatItem(Object.assign({}, c, { from3d: true })));
     });
   }
   save(); render(); saveMat(); renderMat();
@@ -5678,7 +5713,7 @@ render();
       const trs = document.querySelectorAll("#d3CutTable tbody tr");
       rows.forEach((g, i) => {
         const p = g.p;
-        if (trs[i] && (p.corte1 || p.corte2)){
+        if (trs[i] && p.kind === "perfil" && (p.corte1 || p.corte2)){
           const td = trs[i].children[3];
           if (td) td.textContent = (p.corte1 || 0) + "° / " + (p.corte2 || 0) + "°";
         }
@@ -5687,265 +5722,6 @@ render();
   }
 })();
 </script>
-   <script>
-(function(){
-  // Fase 4: Extensión del Imán para deslizamiento guiado sobre ejes (Shift lock en movimiento)
-  const origMove = window.d3Move;
-  if (typeof origMove === "function"){
-    window.d3Move = function(e){
-      if (e.shiftKey && d3Drag && d3Drag.tipo === "pieza"){
-        // Al mantener Shift en modo mover, restringimos el arrastre al eje principal de la pieza de destino o imán más cercano
-        const p = d3Drag.p;
-        const cap = Math.max(1, +d3.capture || 8);
-        origMove.call(this, e);
-        // Si hay una guía de imán activa, forzamos el bloqueo de posición sobre ese valor de eje
-        if (d3.snaps && d3.snaps.length){
-          const s = d3.snaps[0];
-          if (s.axis === "x") p.x = s.val;
-          else if (s.axis === "y") p.y = s.val;
-          else if (s.axis === "z") p.z = s.val;
-        }
-        return;
-      }
-      return origMove.apply(this, arguments);
-    };
-  }
 
-  // Añadir un indicador visual en el estado cuando el deslizador Shift esté activo
-  const origStatus = window.d3Status;
-  if (typeof origStatus === "function"){
-    window.d3Status = function(){
-      origStatus.apply(this, arguments);
-      const el = document.getElementById("d3Status");
-      if (el && d3Drag && d3Drag.tipo === "pieza"){
-        el.innerHTML += " · 🔒 <b>Deslizamiento guiado (Shift activo)</b>";
-      }
-    };
-  }
-  
-  flag("🚀 Fase 4 instalada: Mantené Shift al arrastrar para deslizar piezas guiadas sobre los perfiles");
-})();
-</script>
- <!-- ====== SISTEMA UNIFICADO (CORTE + MAT + 3D) + REGLA COLAPSABLE CON BORRADO Y TRAVESAÑOS                                            ====== -->
-<script>
-(function(){
-  const FULL_BOOK_KEY = "taller_full_book_v2";
-
-  // ---------------- 1. ALMACENAMIENTO UNIFICADO ----------------
-  function loadFullMap(){
-    try {
-      const v2 = localStorage.getItem(FULL_BOOK_KEY);
-      if (v2) return JSON.parse(v2);
-      const v1 = localStorage.getItem("taller_full_book_v1");
-      return v1 ? JSON.parse(v1) : {};
-    } catch(e){ return {}; }
-  }
-
-  function saveFullMap(map){
-    try {
-      localStorage.setItem(FULL_BOOK_KEY, JSON.stringify(map));
-      localStorage.setItem("taller_full_book_v1", JSON.stringify(map));
-    } catch(e){}
-  }
-
-  function getProjectName(){
-    const ids = ["d3BookName", "corteBookName", "mName"];
-    for (const id of ids){
-      const el = document.getElementById(id);
-      if (el && el.value && el.value.trim()) return el.value.trim();
-    }
-    if (typeof mat !== "undefined" && mat && mat.name && mat.name.trim()) return mat.name.trim();
-    return "";
-  }
-
-  function setProjectName(val){
-    const clean = String(val || "").trim();
-    if (typeof mat !== "undefined" && mat) mat.name = clean;
-    ["mName", "corteBookName", "d3BookName", "matBookName"].forEach(id => {
-      const el = document.getElementById(id);
-      if (el && el.value !== clean) el.value = clean;
-    });
-  }
-
-  function captureCurrentSnapshot(name){
-    if (typeof d3Save === "function") try { d3Save(); } catch(e){}
-    if (typeof saveMat === "function") try { saveMat(); } catch(e){}
-    if (typeof save === "function") try { save(); } catch(e){}
-
-    return {
-      id: "m_" + name.toLowerCase().replace(/[^a-z0-9]+/g, "_"),
-      name: name,
-      savedAt: new Date().toISOString(),
-      corte: (typeof state !== "undefined" && state) ? JSON.parse(JSON.stringify(state)) : null,
-      mat: (typeof mat !== "undefined" && mat) ? JSON.parse(JSON.stringify(mat)) : null,
-      d3: (typeof d3 !== "undefined" && d3) ? JSON.parse(JSON.stringify({
-        pieces: Array.isArray(d3.pieces) ? d3.pieces : [],
-        cotas: Array.isArray(d3.cotas) ? d3.cotas : [],
-        cat: d3.cat || {},
-        ple: d3.ple || {},
-        hideMods: d3.hideMods || {},
-        lastConsumables: Array.isArray(d3.lastConsumables) ? d3.lastConsumables : [],
-        woodTone: d3.woodTone || "paraiso",
-        ironTone: d3.ironTone || "negro"
-      })) : null
-    };
-  }
-
-  function saveUnifiedFurniture(customName){
-    const name = String(customName || getProjectName() || "").trim();
-    if (!name){
-      if (typeof flag === "function") flag("⚠️ Escribí primero un nombre para el mueble");
-      else alert("Escribí primero un nombre para el mueble.");
-      return;
-    }
-
-    setProjectName(name);
-    const snap = captureCurrentSnapshot(name);
-    const map = loadFullMap();
-    map[snap.id] = snap;
-    map[name] = snap;
-    saveFullMap(map);
-
-    try {
-      if (typeof book !== "undefined" && Array.isArray(book)){
-        const copyMat = snap.mat ? JSON.parse(JSON.stringify(snap.mat)) : { name, items: [] };
-        const idx = book.findIndex(x => (x.name || "").toLowerCase() === name.toLowerCase());
-        const entryId = idx >= 0 ? book[idx].id : snap.id;
-        const newEntry = Object.assign({}, idx >= 0 ? book[idx] : {}, copyMat, {
-          id: entryId,
-          name: name,
-          savedAt: snap.savedAt
-        });
-        if (idx >= 0) book[idx] = newEntry;
-        else book.unshift(newEntry);
-        map[entryId] = snap;
-        saveFullMap(map);
-        if (typeof origSaveBook === "function") origSaveBook();
-        if (typeof renderBook === "function") renderBook();
-      }
-    } catch(e){}
-
-    renderSharedBookLists();
-    if (typeof flag === "function") flag("💾 Guardado en Corte, Materiales y 3D: " + name);
-  }
-
-  function loadUnifiedFurniture(key){
-    const map = loadFullMap();
-    let snap = map[key];
-
-    if (!snap){
-      const allSnaps = Object.values(map).filter(x => x && typeof x === "object" && x.name);
-      snap = allSnaps.find(x => x.id === key || x.name === key);
-    }
-
-    if (!snap){
-      if (typeof flag === "function") flag("No se encontró el mueble guardado");
-      return;
-    }
-
-    const name = snap.name || "Mueble";
-
-    // 1. Restaurar Plano de Corte
-    if (snap.corte && typeof state !== "undefined"){
-      Object.assign(state, JSON.parse(JSON.stringify(snap.corte)));
-      if (typeof save === "function") try { save(); } catch(e){}
-      if (typeof fillForm === "function") try { fillForm(); } catch(e){}
-      if (typeof render === "function") try { render(); } catch(e){}
-    }
-
-    // 2. Restaurar Materiales
-    if (snap.mat && typeof mat !== "undefined"){
-      Object.assign(mat, JSON.parse(JSON.stringify(snap.mat)));
-      mat.name = name;
-      if (typeof saveMat === "function") try { saveMat(); } catch(e){}
-      if (typeof fillMatForm === "function") try { fillMatForm(); } catch(e){}
-      if (typeof renderMat === "function") try { renderMat(); } catch(e){}
-    }
-
-    // 3. Restaurar Diseño 3D completo
-    if (snap.d3 && typeof d3 !== "undefined"){
-      const s3 = JSON.parse(JSON.stringify(snap.d3));
-      d3.pieces = Array.isArray(s3.pieces) ? s3.pieces : [];
-      d3.cotas = Array.isArray(s3.cotas) ? s3.cotas : [];
-      if (s3.cat) d3.cat = s3.cat;
-      if (s3.ple) d3.ple = Object.assign(d3.ple || {}, s3.ple);
-      d3.hideMods = s3.hideMods || {};
-      d3.lastConsumables = Array.isArray(s3.lastConsumables) ? s3.lastConsumables : [];
-      if (s3.woodTone) d3.woodTone = s3.woodTone;
-      if (s3.ironTone) d3.ironTone = s3.ironTone;
-      d3.sel = null;
-
-      if (typeof d3RenderModToggles === "function") try { d3RenderModToggles(); } catch(e){}
-      if (typeof d3Fit === "function") try { d3Fit(); } catch(e){}
-      if (typeof d3Save === "function") try { d3Save(); } catch(e){}
-      if (typeof d3SelRender === "function") try { d3SelRender(); } catch(e){}
-      if (typeof d3TelRender === "function") try { d3TelRender(); } catch(e){}
-      if (typeof d3OutRender === "function") try { d3OutRender(); } catch(e){}
-      if (typeof d3Status === "function") try { d3Status(); } catch(e){}
-      if (typeof d3StatsRender === "function") try { d3StatsRender(); } catch(e){}
-      if (typeof d3Draw === "function") try { d3Draw(); } catch(e){}
-    }
-
-    setProjectName(name);
-    renderSharedBookLists();
-    renderRulerManager();
-    if (typeof flag === "function") flag("📂 Cargado en Corte, Materiales y 3D: " + name);
-  }
-
-  function deleteUnifiedFurniture(key){
-    if (!confirm("¿Eliminar este mueble guardado de las 3 pestañas?")) return;
-    const map = loadFullMap();
-    const snap = map[key] || Object.values(map).find(x => x && (x.id === key || x.name === key));
-    if (snap){
-      delete map[snap.id];
-      delete map[snap.name];
-    }
-    delete map[key];
-    saveFullMap(map);
-
-    try {
-      if (typeof book !== "undefined" && Array.isArray(book)){
-        const idx = book.findIndex(x => x.id === key || x.name === key || (snap && x.name === snap.name));
-        if (idx >= 0) book.splice(idx, 1);
-        if (typeof origSaveBook === "function") origSaveBook();
-        if (typeof renderBook === "function") renderBook();
-      }
-    } catch(e){}
-
-    renderSharedBookLists();
-    if (typeof flag === "function") flag("🗑️ Mueble eliminado");
-  }
-
-  function getUniqueSavedList(){
-    const map = loadFullMap();
-    const byName = new Map();
-
-    if (typeof book !== "undefined" && Array.isArray(book)){
-      book.forEach(b => {
-        if (b && b.name){
-          const snap = map[b.id] || map[b.name] || { id: b.id || b.name, name: b.name, mat: b };
-          byName.set(b.name.toLowerCase(), snap);
-        }
-      });
-    }
-
-    Object.values(map).forEach(snap => {
-      if (snap && typeof snap === "object" && snap.name){
-        byName.set(snap.name.toLowerCase(), snap);
-      }
-    });
-
-    return Array.from(byName.values()).sort((a, b) =>
-      String(b.savedAt || "").localeCompare(String(a.savedAt || ""))
-    );
-  }
-
-  function renderSharedBookLists(){
-    const list = getUniqueSavedList();
-    const html = !list.length
-      ? '<p class="empty" style="margin:6px 0;opacity:.75">Todavía no hay muebles guardados.</p>'
-      : list.map(snap => {
-          const nCorte = snap.corte && Array.isArray(snap.corte.pieces) ? snap.c
- </script>            
 </body>
 </html>

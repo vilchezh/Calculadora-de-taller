@@ -26,10 +26,13 @@ Qué resuelve:
 Cómo interpretarlo:
     - Si dice OPTIMAL con N tableros y la app usó N: el plano de la app ya
       es el mejor posible en cantidad de tableros (no se puede con menos).
+      Si dice FEASIBLE, es el mejor plan hallado en el tiempo dado, pero NO
+      está probado que sea el mínimo: probá con más segundos.
     - Si el solver encuentra menos tableros que la app: valen la pena los
       recortes de guillotina que hagan falta para lograr ese ahorro.
-    - El disco de sierra (kerf) se aproxima inflando cada pieza en kerf mm
-      por lado, así que el resultado es un poco conservador.
+    - El disco de sierra (kerf) se modela de forma exacta: cada pieza y el
+      tablero se agrandan en kerf mm, así queda un disco entre piezas vecinas
+      y ninguno contra los bordes del tablero (igual que en la app).
 
 Las posiciones que imprime son de referencia (empaquetado libre): el armado
 final de los cortes de guillotina seguís haciéndolo en la app, que dibuja
@@ -76,7 +79,12 @@ def prepare(job):
 
 
 def build_and_solve(BL, BW, pieces, max_boards, time_limit):
-    """Modelo 2D de bin packing con CP-SAT. Devuelve (solver, estado, datos)."""
+    """Modelo 2D de bin packing con CP-SAT. Devuelve (solver, estado, datos).
+
+    Las piezas llegan agrandadas en kerf; BL y BW deben llegar agrandados en
+    kerf también (tablero útil + kerf): así el disco queda entre piezas y no
+    contra los bordes.
+    """
     model = cp_model.CpModel()
     nb = max_boards
 
@@ -143,40 +151,58 @@ def main():
         return
     print(f"Tablero útil: {BL} x {BW} mm · kerf {kerf} mm · {len(pieces)} piezas")
 
-    area_lb = max(1, math.ceil(sum(L * W for _, L, W, _ in pieces) / (BL * BW)))
+    # Límite inferior por área con las medidas REALES: el disco solo puede empeorar el resultado
+    area_lb = max(1, math.ceil(sum(l * w for _, l, w, _ in display) / (BL * BW)))
     app_boards = int(job.get("app", {}).get("boards") or 0)
     print(f"Límite inferior por área: {area_lb} tablero(s)")
     if app_boards:
         print(f"Plano de la app: {app_boards} tablero(s)")
 
+    # Disco exacto: piezas y tablero agrandados en kerf (el disco no corta contra los bordes)
+    BLk, BWk = BL + kerf, BW + kerf
+
     # Arranca desde el valor de la app (es factible) o desde el límite de área.
     nb = max(1, app_boards if app_boards else area_lb)
     for intento in range(6):
         print(f"Probando con {nb} tablero(s)…")
-        solver, status, data = build_and_solve(BL, BW, pieces, nb, time_limit)
-        name = solver.StatusName(status)
+        solver, status, data = build_and_solve(BLk, BWk, pieces, nb, time_limit)
+        status_name = solver.StatusName(status)
         if status == cp_model.INFEASIBLE:
             nb += 1
             continue
         break
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        print(f"Sin solución: {name}. Probá con más tiempo (python cpsat_corte.py {path} 300).")
+        if status == cp_model.INFEASIBLE:
+            print(f"Sin solución: INFEASIBLE incluso con {nb} tablero(s). Revisá las medidas del pedido.")
+        else:
+            tengo = f" (la app ya tiene un plano de {app_boards} tablero(s))" if app_boards else ""
+            print(f"El solver no encontró ningún plan en {time_limit:.0f} s{tengo}. Eso NO significa que no exista. "
+                  f"Probá con más tiempo (python cpsat_corte.py {path} 300).")
         return
 
     pres, xs, ys, orients, used = data
     boards_used = sum(1 for u in used if solver.Value(u) == 1)
-    print(f"\nEstado: {name} · Tableros necesarios: {boards_used}")
+    proven = status == cp_model.OPTIMAL
+    print(f"\nEstado: {status_name} · Tableros necesarios: {boards_used}")
+    if not proven:
+        print(f"(mejor plan hallado en {time_limit:.0f} s; NO está probado que sea el mínimo · límite por área: {area_lb})")
 
     if app_boards:
         if boards_used < app_boards:
             print(f"✅ El solver encontró un plan con {app_boards - boards_used} tablero(s) menos que la app.")
+            print("   (Es empaquetado libre: confirmá en la app que se pueda cortar con guillotina.)")
+        elif boards_used > app_boards:
+            print("⚠️  El solver necesitó más tableros que la app: revisá que el pedido exportado corresponda a su plano.")
+        elif proven or boards_used <= area_lb:
+            print("✅ La app ya usa la mínima cantidad de tableros posible (probado).")
         else:
-            print("✅ La app ya usa la mínima cantidad de tableros posible.")
+            print(f"ℹ️  No se encontró mejora en {time_limit:.0f} s, pero NO está probado que {app_boards} sea el mínimo "
+                  f"(el límite por área es {area_lb}). Probá con más tiempo.")
 
     board_area = BL * BW
     per_board = {}
-    for i, (name, L, W, can_rot) in enumerate(pieces):
+    for i, (_, L, W, can_rot) in enumerate(pieces):
         for b in range(nb):
             if solver.Value(pres[i, b]) == 1:
                 x = solver.Value(xs[i, b])
