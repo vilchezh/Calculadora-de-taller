@@ -5946,5 +5946,284 @@ render();
   renderSharedBookLists();
 })();
 </script>
+<!-- ====== PARCHE: PLANES DE CORTE Y PRECIOS INDEPENDIENTES (MADERA VS CHAPA) ====== -->
+<script>
+(function(){
+  const SPLIT_KEY = "taller_corte_dual_v1";
+
+  // Configuraciones independientes por defecto para Madera y Chapa
+  function defaultProfile(kind){
+    if (kind === "metal"){
+      return {
+        board: { price: 0, length: 2000, width: 1000, thick: 1.24 },
+        cut: {
+          kerf: 2, waste: 10, rotate: true, service: 0, serviceMode: "total", costMode: "used",
+          material: "metal", metalType: "acero", priceBy: "sheet", method: "amoladora",
+          maxCut: 0, trim: 0, minCharge: 0, bends: 0, bendPrice: 0, holes: 0, holePrice: 0, bends3d: 0
+        },
+        pieces: []
+      };
+    }
+    return {
+      board: { price: 0, length: 2600, width: 1830, thick: 18 },
+      cut: {
+        kerf: 3, waste: 10, rotate: true, service: 0, serviceMode: "total", costMode: "used",
+        material: "wood", metalType: "acero", priceBy: "sheet", method: "",
+        maxCut: 0, trim: 0, minCharge: 0, bends: 0, bendPrice: 0, holes: 0, holePrice: 0, bends3d: 0
+      },
+      pieces: []
+    };
+  }
+
+  function loadProfiles(){
+    try {
+      const raw = JSON.parse(localStorage.getItem(SPLIT_KEY) || "null");
+      if (raw && raw.wood && raw.metal) return raw;
+    } catch(e){}
+    const curMat = (typeof state !== "undefined" && state.cut && state.cut.material === "metal") ? "metal" : "wood";
+    const profs = { wood: defaultProfile("wood"), metal: defaultProfile("metal"), active: curMat };
+    if (typeof state !== "undefined"){
+      profs[curMat] = JSON.parse(JSON.stringify(state));
+    }
+    return profs;
+  }
+
+  let profiles = loadProfiles();
+
+  function saveCurrentIntoProfile(){
+    if (typeof state === "undefined" || !state.cut) return;
+    const k = state.cut.material === "metal" ? "metal" : "wood";
+    profiles.active = k;
+    profiles[k] = {
+      board: JSON.parse(JSON.stringify(state.board || {})),
+      cut: JSON.parse(JSON.stringify(state.cut || {})),
+      pieces: JSON.parse(JSON.stringify(state.pieces || []))
+    };
+    try { localStorage.setItem(SPLIT_KEY, JSON.stringify(profiles)); } catch(e){}
+  }
+
+  function switchMaterialProfile(targetKind, skipSaveCurrent){
+    const k = targetKind === "metal" ? "metal" : "wood";
+    if (!skipSaveCurrent) saveCurrentIntoProfile();
+    if (!profiles[k]) profiles[k] = defaultProfile(k);
+
+    const src = JSON.parse(JSON.stringify(profiles[k]));
+    src.cut.material = k;
+    state.board = Object.assign(defaultProfile(k).board, src.board);
+    state.cut   = Object.assign(defaultProfile(k).cut, src.cut);
+    state.pieces = Array.isArray(src.pieces) ? src.pieces : [];
+    profiles.active = k;
+
+    try { localStorage.setItem(SPLIT_KEY, JSON.stringify(profiles)); } catch(e){}
+    if (typeof fillForm === "function") fillForm();
+    if (typeof save === "function") save();
+    if (typeof render === "function") render();
+    renderDualSwitchBar();
+  }
+
+  // 1. Interceptar el selector #material para que al cambiar entre Madera y Chapa
+  // cargue su propio precio, medidas de placa, disco y lista de piezas
+  const matSel = document.getElementById("material");
+  if (matSel){
+    matSel.addEventListener("mousedown", () => saveCurrentIntoProfile());
+    matSel.addEventListener("focus", () => saveCurrentIntoProfile());
+    matSel.addEventListener("change", e => {
+      const target = e.target.value === "metal" ? "metal" : "wood";
+      switchMaterialProfile(target, true);
+      if (typeof flag === "function"){
+        flag(target === "metal"
+          ? "🔩 Plan de Chapa activo (precio, plancha y piezas de chapa)"
+          : "🪵 Plan de Madera activo (precio, tablero y piezas de madera)");
+      }
+    }, true);
+  }
+
+  // Guardar automáticamente en el perfil correspondiente cada vez que se edita algo en Corte
+  const origSave = window.save;
+  if (typeof origSave === "function"){
+    window.save = function(){
+      saveCurrentIntoProfile();
+      return origSave.apply(this, arguments);
+    };
+  }
+
+  // 2. Separar el envío al Cotizador ("Pasar al cotizador") para que Madera y Chapa
+  // creen DOS ítems distintos (fromCutWood y fromCutMetal) y NO se pisen el precio
+  window.sendToQuote = function(){
+    const c = last;
+    if (!c || !c.nBoards) return;
+    const placed = c.res.boards.reduce((s,b) => s.concat(b.placed), []);
+    const n = placed.length;
+    const isMetal = !!c.metal;
+    const tagKey = isMetal ? "fromCutMetal" : "fromCutWood";
+
+    const name = c.costMode === "used"
+      ? `${isMetal ? "Chapa" : "Madera"} cortada (${f0.format(n)} pieza${n === 1 ? "" : "s"}, ${m2(c.usedArea)})`
+      : `${isMetal ? "Planchas de chapa" : "Tableros de madera"} (${f0.format(c.nBoards)} × ${money(c.sheetPrice)})`;
+    const price = Math.round(c.woodForQuote * 100) / 100;
+    const dims = (c.costMode === "used" && n === 1)
+      ? (placed[0].rotated
+          ? { l: Math.round(placed[0].h), w: Math.round(placed[0].w) }
+          : { l: Math.round(placed[0].w), w: Math.round(placed[0].h) })
+      : { l: 0, w: 0 };
+
+    // Buscar únicamente el ítem del mismo material (Madera o Chapa)
+    let it = mat.items.find(x => x[tagKey] && x.kind === "tablero");
+    if (it){
+      Object.assign(it, { name, price, priceDate: todayISO() }, dims);
+    } else {
+      it = Object.assign(matItemDefaults("tablero"),
+        { id: uid(), name, price, priceDate: todayISO(), [tagKey]: true, from3d: true }, dims);
+      mat.items.unshift(it);
+    }
+    saveMat(); renderMat(); setTab("mat");
+    flag(isMetal ? "🔩 Chapa pasada al cotizador (separada de la madera)" : "🪵 Madera pasada al cotizador (separada de la chapa)");
+  };
+
+  // 3. d3SendCorte dual: envía las maderas al perfil de Madera y las chapas al perfil de Chapa
+  // al mismo tiempo, sin mezclarlas y respetando el precio de cada placa
+  window.d3SendCorte = function(){
+    saveCurrentIntoProfile();
+    const visible = (d3.pieces || []).filter(p => {
+      if (p.hw) return false;
+      if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) return false;
+      return !p._sent;
+    });
+
+    const woods  = visible.filter(p => p.kind === "madera");
+    const sheets = visible.filter(p => p.kind === "chapa" || p.kind === "plegada");
+
+    if (!woods.length && !sheets.length){
+      if (typeof flag === "function") flag("Nada nuevo para mandar: tocá «Reenviar todo» si querés repetir");
+      return;
+    }
+
+    let addedW = 0, addedM = 0;
+
+    // Cargar maderas en el perfil de Madera
+    if (woods.length){
+      if (!profiles.wood) profiles.wood = defaultProfile("wood");
+      const pw = profiles.wood;
+      const thicks = new Set(woods.map(p => String(p.t)));
+      if (thicks.size === 1) pw.board.thick = +[...thicks][0];
+      for (const p of woods){
+        const ex = pw.pieces.find(q => q.from3d && q.name === p.name && q.l === p.l && q.w === p.w && !q.grain);
+        if (ex) ex.qty += 1;
+        else pw.pieces.push({ id: uid(), name: p.name, l: Math.round(p.l), w: Math.round(p.w), qty: 1, grain: false, from3d: true });
+        p._sent = true; addedW++;
+      }
+    }
+
+    // Cargar chapas y plegadas en el perfil de Chapa
+    if (sheets.length){
+      if (!profiles.metal) profiles.metal = defaultProfile("metal");
+      const pm = profiles.metal;
+      const thicks = new Set(sheets.map(p => String(p.t)));
+      if (thicks.size === 1) pm.board.thick = +[...thicks][0];
+      let bendsAdded = 0;
+      for (const p of sheets){
+        const l = Math.round(p.kind === "plegada" ? p.devA : p.l);
+        const w = Math.round(p.kind === "plegada" ? p.devB : p.w);
+        const nm = p.kind === "plegada" ? p.name + " — desarrollo" : p.name;
+        const ex = pm.pieces.find(q => q.from3d && q.name === nm && q.l === l && q.w === w);
+        if (ex) ex.qty += 1;
+        else pm.pieces.push({ id: uid(), name: nm, l, w, qty: 1, grain: false, from3d: true });
+        if (p.kind === "plegada") bendsAdded += p.bends || 0;
+        p._sent = true; addedM++;
+      }
+      if (bendsAdded){
+        pm.cut.bends = (pm.cut.bends || 0) + bendsAdded;
+        pm.cut.bends3d = (pm.cut.bends3d || 0) + bendsAdded;
+      }
+    }
+
+    // Mostrar el perfil que tenga piezas recién enviadas (o mantener el activo)
+    const showKind = (addedW > 0 && addedM === 0) ? "wood"
+                   : (addedM > 0 && addedW === 0) ? "metal"
+                   : (profiles.active || "wood");
+    switchMaterialProfile(showKind, true);
+    if (typeof d3OutRender === "function") d3OutRender();
+    if (typeof d3Save === "function") d3Save();
+
+    const parts = [];
+    if (addedW) parts.push(`${addedW} de madera`);
+    if (addedM) parts.push(`${addedM} de chapa`);
+    if (typeof flag === "function"){
+      flag(`✅ Enviadas por separado: ${parts.join(" y ")} (cada material en su propio plano y precio)`);
+    }
+  };
+
+  // 4. Actualizar d3RecalcAllFrom3D para que limpie las piezas 3D de AMBOS perfiles
+  // sin borrar las piezas manuales ni pisar los precios de tablero/plancha
+  window.d3RecalcAllFrom3D = function(){
+    saveCurrentIntoProfile();
+    ["wood", "metal"].forEach(k => {
+      if (!profiles[k]) profiles[k] = defaultProfile(k);
+      profiles[k].pieces = (profiles[k].pieces || []).filter(p => !p.from3d);
+      profiles[k].cut.bends = Math.max(0, (profiles[k].cut.bends || 0) - (profiles[k].cut.bends3d || 0));
+      profiles[k].cut.bends3d = 0;
+    });
+
+    // Conservar en Materiales los ítems manuales y los que vienen del plano de corte con precio propio
+    mat.items = (mat.items || []).filter(it => !it.from3d || it.fromCutWood || it.fromCutMetal);
+
+    (d3.pieces || []).forEach(p => {
+      const hidden = p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod];
+      p._sent = !!(p.hw || hidden);
+    });
+
+    window.d3SendCorte();
+    if (typeof d3SendMat === "function") d3SendMat();
+
+    if (Array.isArray(d3.lastConsumables)){
+      d3.lastConsumables.forEach(c => {
+        if (c.mod && c.mod !== "base" && d3.hideMods && d3.hideMods[c.mod]) return;
+        mat.items.push(sanitizeMatItem(Object.assign({}, c, { from3d: true })));
+      });
+    }
+    save(); render(); saveMat(); renderMat();
+    renderDualSwitchBar();
+  };
+
+  // 5. Barra superior en Plano de Corte para alternar en 1 clic entre el Plan de Madera y el Plan de Chapa
+  function renderDualSwitchBar(){
+    const setupCol = document.querySelector("#viewCorte .setup");
+    if (!setupCol) return;
+    let bar = document.getElementById("dualCorteBar");
+    if (!bar){
+      bar = document.createElement("div");
+      bar.id = "dualCorteBar";
+      bar.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;padding:10px;background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);box-shadow:var(--shadow)";
+      setupCol.prepend(bar);
+    }
+    const nW = (profiles.wood && Array.isArray(profiles.wood.pieces))
+      ? profiles.wood.pieces.reduce((s,p) => s + (p.qty || 1), 0) : 0;
+    const nM = (profiles.metal && Array.isArray(profiles.metal.pieces))
+      ? profiles.metal.pieces.reduce((s,p) => s + (p.qty || 1), 0) : 0;
+    const pW = profiles.wood && profiles.wood.board ? (profiles.wood.board.price || 0) : 0;
+    const pM = profiles.metal && profiles.metal.board ? (profiles.metal.board.price || 0) : 0;
+    const act = (state.cut && state.cut.material === "metal") ? "metal" : "wood";
+
+    bar.innerHTML = `
+      <button type="button" class="btn ${act === 'wood' ? 'primary' : 'quiet'}" data-switch-corte="wood" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px">
+        <span>🪵 <b>Plan de Madera (${nW} pz)</b></span>
+        <small style="font-size:11.5px;opacity:.85">${pW > 0 ? "$ " + f0.format(pW) + "/placa" : "Sin precio cargado"}</small>
+      </button>
+      <button type="button" class="btn ${act === 'metal' ? 'primary' : 'quiet'}" data-switch-corte="metal" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px">
+        <span>🔩 <b>Plan de Chapa (${nM} pz)</b></span>
+        <small style="font-size:11.5px;opacity:.85">${pM > 0 ? "$ " + f0.format(pM) + "/plancha" : "Sin precio cargado"}</small>
+      </button>
+    `;
+  }
+
+  document.addEventListener("click", e => {
+    const btn = e.target.closest("[data-switch-corte]");
+    if (!btn) return;
+    switchMaterialProfile(btn.dataset.switchCorte, false);
+  });
+
+  renderDualSwitchBar();
+})();
+</script>
 </body>
 </html>
