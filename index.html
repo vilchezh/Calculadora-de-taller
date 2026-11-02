@@ -5723,5 +5723,228 @@ render();
 })();
 </script>
 
+<!-- ====== FASE 4 + GUARDADO UNIFICADO 3 EN 1 (CORTE + MATERIALES + 3D) ====== -->
+<script>
+(function(){
+  // 1. Shift guiado en X/Z (sin saltar a la cara ni mezclar ejes)
+  const origMove = window.d3Move;
+  if (typeof origMove === "function"){
+    window.d3Move = function(e){
+      origMove.apply(this, arguments);
+      if (d3Drag && d3Drag.tipo === "pieza" && !d3Drag.vertical && e.ctrlKey && d3Drag.p){
+        const p = d3Drag.p;
+        const dx = Math.abs(p.x - (d3Drag.startX ?? p.x));
+        const dz = Math.abs(p.z - (d3Drag.startZ ?? p.z));
+        if (dx > dz) p.z = d3Drag.startZ ?? p.z;
+        else p.x = d3Drag.startX ?? p.x;
+        d3Draw();
+      }
+    };
+  }
+
+  // 2. Sistema de Guardado Unificado 3 en 1 (compatible con book.entries)
+  const FULL_BOOK_KEY = "taller_full_book_v3";
+
+  function loadFullMap(){
+    try { return JSON.parse(localStorage.getItem(FULL_BOOK_KEY) || "{}"); }
+    catch(e){ return {}; }
+  }
+  function saveFullMap(map){
+    try { localStorage.setItem(FULL_BOOK_KEY, JSON.stringify(map)); }
+    catch(e){}
+  }
+
+  function makeSafeId(name){
+    const clean = String(name || "mueble").trim().toLowerCase();
+    let hash = 0;
+    for (let i = 0; i < clean.length; i++){
+      hash = ((hash << 5) - hash) + clean.charCodeAt(i);
+      hash |= 0;
+    }
+    const slug = clean.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "_");
+    return "m_" + slug + "_" + Math.abs(hash).toString(36);
+  }
+
+  function getProjectName(){
+    for (const id of ["d3BookName", "corteBookName", "mName"]){
+      const el = document.getElementById(id);
+      if (el && el.value && el.value.trim()) return el.value.trim();
+    }
+    return (typeof mat !== "undefined" && mat && mat.name) ? String(mat.name).trim() : "";
+  }
+
+  function setProjectName(val){
+    const clean = String(val || "").trim();
+    if (typeof mat !== "undefined" && mat) mat.name = clean;
+    ["mName", "corteBookName", "d3BookName"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el.value !== clean) el.value = clean;
+    });
+  }
+
+  window.saveUnifiedFurniture = function(customName){
+    const name = String(customName || getProjectName() || "").trim();
+    if (!name){
+      if (typeof flag === "function") flag("⚠️ Escribí primero un nombre para el mueble");
+      return;
+    }
+    setProjectName(name);
+    const id = makeSafeId(name);
+    const snap = {
+      id, name, savedAt: new Date().toISOString(),
+      corte: typeof state !== "undefined" ? JSON.parse(JSON.stringify(state)) : null,
+      mat: typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : null,
+      d3: typeof d3 !== "undefined" ? JSON.parse(JSON.stringify({
+        pieces: d3.pieces || [],
+        cotas: d3.cotas || [],
+        cat: d3.cat || {},
+        ple: d3.ple || {},
+        hideMods: d3.hideMods || {},
+        lastConsumables: d3.lastConsumables || []
+      })) : null
+    };
+
+    const map = loadFullMap();
+    map[id] = snap;
+    map[name] = snap;
+    saveFullMap(map);
+
+    if (typeof book !== "undefined" && Array.isArray(book.entries)){
+      const idx = book.entries.findIndex(x => (x.name || "").toLowerCase() === name.toLowerCase());
+      const entryObj = Object.assign({}, snap.mat || {}, { id, name, savedAt: snap.savedAt });
+      if (idx >= 0) book.entries[idx] = entryObj;
+      else book.entries.unshift(entryObj);
+      if (typeof saveBook === "function") saveBook();
+      if (typeof renderBook === "function") renderBook();
+    }
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("💾 Mueble guardado en Corte, Materiales y 3D: " + name);
+  };
+
+  window.loadUnifiedFurniture = function(key){
+    const map = loadFullMap();
+    const snap = map[key] || Object.values(map).find(x => x && (x.id === key || x.name === key));
+    if (!snap){
+      if (typeof flag === "function") flag("No se encontró el mueble guardado");
+      return;
+    }
+    if (snap.corte && typeof state !== "undefined"){
+      Object.assign(state, JSON.parse(JSON.stringify(snap.corte)));
+      fillForm(); save(); render();
+    }
+    if (snap.mat && typeof mat !== "undefined"){
+      Object.assign(mat, JSON.parse(JSON.stringify(snap.mat)));
+      fillMatForm(); saveMat(); renderMat();
+    }
+    if (snap.d3 && typeof d3 !== "undefined"){
+      const s3 = JSON.parse(JSON.stringify(snap.d3));
+      d3.pieces = (Array.isArray(s3.pieces) ? s3.pieces : []).map(d3SanitizePiece).filter(Boolean);
+      d3.cotas = Array.isArray(s3.cotas) ? s3.cotas : [];
+      if (s3.cat) d3.cat = s3.cat;
+      if (s3.ple) d3.ple = Object.assign(d3.ple || {}, s3.ple);
+      d3.hideMods = s3.hideMods || {};
+      d3.lastConsumables = Array.isArray(s3.lastConsumables) ? s3.lastConsumables : [];
+      d3.sel = null;
+      d3RenderModToggles(); d3Fit(); d3Save();
+      d3SelRender(); d3TelRender(); d3OutRender(); d3Status(); d3StatsRender(); d3Draw();
+    }
+    setProjectName(snap.name);
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("📂 Mueble cargado en las 3 pestañas: " + snap.name);
+  };
+
+  window.deleteUnifiedFurniture = function(key){
+    if (!confirm("¿Eliminar este mueble guardado de las 3 pestañas?")) return;
+    const map = loadFullMap();
+    const snap = map[key] || Object.values(map).find(x => x && (x.id === key || x.name === key));
+    if (snap){ delete map[snap.id]; delete map[snap.name]; }
+    delete map[key];
+    saveFullMap(map);
+    if (typeof book !== "undefined" && Array.isArray(book.entries)){
+      book.entries = book.entries.filter(x => x.id !== key && x.name !== key && (!snap || x.name !== snap.name));
+      if (typeof saveBook === "function") saveBook();
+      if (typeof renderBook === "function") renderBook();
+    }
+    renderSharedBookLists();
+    if (typeof flag === "function") flag("🗑️ Mueble eliminado");
+  };
+
+  function renderSharedBookLists(){
+    const map = loadFullMap();
+    const unique = new Map();
+    Object.values(map).forEach(s => {
+      if (s && typeof s === "object" && s.name) unique.set(s.name.toLowerCase(), s);
+    });
+    const list = Array.from(unique.values());
+    const html = !list.length
+      ? '<p class="empty" style="margin:6px 0">Todavía no hay muebles guardados (3 en 1).</p>'
+      : list.map(s => {
+          const nC = s.corte && Array.isArray(s.corte.pieces) ? s.corte.pieces.length : 0;
+          const nM = s.mat && Array.isArray(s.mat.items) ? s.mat.items.length : 0;
+          const n3 = s.d3 && Array.isArray(s.d3.pieces) ? s.d3.pieces.length : 0;
+          const safe = esc(s.name);
+          return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--rule);border-radius:var(--r);margin-top:6px;background:var(--panel-2)">
+            <div>
+              <b>${safe}</b>
+              <div class="hint" style="margin:2px 0 0">Corte: ${nC} pz · Mat: ${nM} ítems · 3D: ${n3} pz</div>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn quiet" data-uload="${safe}">📂 Cargar 3 en 1</button>
+              <button type="button" class="btn danger" data-udel="${safe}">✕</button>
+            </div>
+          </div>`;
+        }).join("");
+
+    ["corteBookList", "d3BookList"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = html;
+    });
+  }
+
+  function injectSharedBookUI(){
+    const targets = [
+      { view: "viewCorte", cardId: "corteBookCard", inpId: "corteBookName", btnId: "btnSaveFromCorte", listId: "corteBookList" },
+      { view: "viewD3",    cardId: "d3BookCard",    inpId: "d3BookName",    btnId: "btnSaveFromD3",    listId: "d3BookList" }
+    ];
+    targets.forEach(t => {
+      const col = document.querySelector(`#${t.view} .setup`);
+      if (!col || document.getElementById(t.cardId)) return;
+      const sec = document.createElement("section");
+      sec.className = "card";
+      sec.id = t.cardId;
+      sec.innerHTML = `
+        <h2><span class="n">💾</span> Muebles guardados (3 en 1)</h2>
+        <div class="body">
+          <div class="grid g2">
+            <label><span class="lab">Nombre del mueble</span>
+              <input type="text" id="${t.inpId}" placeholder="Ej: Isla 130x50" value="${esc(getProjectName())}">
+            </label>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn primary" id="${t.btnId}" type="button" style="width:100%">💾 Guardar 3 en 1</button>
+            </div>
+          </div>
+          <div id="${t.listId}" style="margin-top:10px"></div>
+        </div>`;
+      col.appendChild(sec);
+      if (t.view === "viewD3"){
+        sec.querySelector("h2")?.addEventListener("click", () => sec.classList.toggle("d3-closed"));
+      }
+      document.getElementById(t.btnId)?.addEventListener("click", () => {
+        window.saveUnifiedFurniture(document.getElementById(t.inpId)?.value);
+      });
+    });
+  }
+
+  document.addEventListener("click", e => {
+    const ld = e.target.closest("[data-uload]");
+    if (ld){ window.loadUnifiedFurniture(ld.dataset.uload); return; }
+    const dl = e.target.closest("[data-udel]");
+    if (dl){ window.deleteUnifiedFurniture(dl.dataset.udel); return; }
+  });
+
+  injectSharedBookUI();
+  renderSharedBookLists();
+})();
+</script>
 </body>
 </html>
