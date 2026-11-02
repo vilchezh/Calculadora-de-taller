@@ -5723,10 +5723,430 @@ render();
 })();
 </script>
 
-<!-- ====== FASE 4 + GUARDADO UNIFICADO 3 EN 1 (CORTE + MATERIALES + 3D) ====== -->
+<!-- ====== FASE 4 + GUARDADO 3 EN 1 + PLANES DE CORTE INDEPENDIENTES (MADERA VS CHAPA) ====== -->
 <script>
 (function(){
-  // 1. Shift guiado en X/Z (sin saltar a la cara ni mezclar ejes)
+  const SPLIT_KEY = "taller_corte_dual_v2";
+  const FULL_BOOK_KEY = "taller_full_book_v3";
+
+  // -------------------------------------------------------------------------
+  // 1. PERFILES INDEPENDIENTES PARA MADERA Y CHAPA (TABLERO, PRECIO Y PIEZAS)
+  // -------------------------------------------------------------------------
+  function defaultProfile(kind){
+    if (kind === "metal"){
+      return {
+        board: { price: 0, length: 2000, width: 1000, thick: 1.24 },
+        cut: {
+          kerf: 2, waste: 10, rotate: true, service: 0, serviceMode: "total", costMode: "used",
+          material: "metal", metalType: "acero", priceBy: "sheet", method: "amoladora",
+          maxCut: 0, trim: 0, minCharge: 0, bends: 0, bendPrice: 0, holes: 0, holePrice: 0, bends3d: 0
+        },
+        pieces: []
+      };
+    }
+    return {
+      board: { price: 0, length: 2600, width: 1830, thick: 18 },
+      cut: {
+        kerf: 3, waste: 10, rotate: true, service: 0, serviceMode: "total", costMode: "used",
+        material: "wood", metalType: "acero", priceBy: "sheet", method: "",
+        maxCut: 0, trim: 0, minCharge: 0, bends: 0, bendPrice: 0, holes: 0, holePrice: 0, bends3d: 0
+      },
+      pieces: []
+    };
+  }
+
+  function cleanPiecesForKind(list, kind){
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter(p => p && (!p.matKind || p.matKind === kind))
+      .map(p => Object.assign({}, p, { matKind: kind }));
+  }
+
+  function loadProfiles(){
+    try {
+      const raw = JSON.parse(localStorage.getItem(SPLIT_KEY) || "null");
+      if (raw && raw.wood && raw.metal){
+        raw.wood.pieces  = cleanPiecesForKind(raw.wood.pieces, "wood");
+        raw.metal.pieces = cleanPiecesForKind(raw.metal.pieces, "metal");
+        raw.wood.cut  = Object.assign(defaultProfile("wood").cut, raw.wood.cut, { material: "wood" });
+        raw.metal.cut = Object.assign(defaultProfile("metal").cut, raw.metal.cut, { material: "metal" });
+        return {
+          wood: raw.wood,
+          metal: raw.metal,
+          active: raw.active === "metal" ? "metal" : "wood"
+        };
+      }
+    } catch(e){}
+
+    const curMat = (typeof state !== "undefined" && state.cut && state.cut.material === "metal") ? "metal" : "wood";
+    const profs = { wood: defaultProfile("wood"), metal: defaultProfile("metal"), active: curMat };
+    if (typeof state !== "undefined"){
+      profs[curMat] = {
+        board: Object.assign(defaultProfile(curMat).board, state.board),
+        cut: Object.assign(defaultProfile(curMat).cut, state.cut, { material: curMat }),
+        pieces: cleanPiecesForKind(state.pieces, curMat)
+      };
+    }
+    return profs;
+  }
+
+  let profiles = loadProfiles();
+  let activeKind = profiles.active || "wood";
+  let isSwitching = false;
+
+  // Sincroniza el estado en memoria hacia el perfil activo (NUNCA lee state.cut.material para decidir el destino)
+  function saveCurrentIntoProfile(){
+    if (isSwitching || typeof state === "undefined" || !state.board || !state.cut) return;
+    const k = activeKind === "metal" ? "metal" : "wood";
+    state.cut.material = k;
+    state.pieces = cleanPiecesForKind(state.pieces, k);
+    profiles.active = k;
+    profiles[k] = {
+      board: JSON.parse(JSON.stringify(state.board)),
+      cut: Object.assign(JSON.parse(JSON.stringify(state.cut)), { material: k }),
+      pieces: JSON.parse(JSON.stringify(state.pieces))
+    };
+    try { localStorage.setItem(SPLIT_KEY, JSON.stringify(profiles)); } catch(e){}
+  }
+
+  function switchMaterialProfile(targetKind, skipSaveCurrent){
+    const k = targetKind === "metal" ? "metal" : "wood";
+    if (!skipSaveCurrent) saveCurrentIntoProfile();
+    isSwitching = true;
+    try {
+      if (!profiles[k]) profiles[k] = defaultProfile(k);
+      activeKind = k;
+      profiles.active = k;
+      const src = JSON.parse(JSON.stringify(profiles[k]));
+      state.board  = Object.assign(defaultProfile(k).board, src.board);
+      state.cut    = Object.assign(defaultProfile(k).cut, src.cut, { material: k });
+      state.pieces = cleanPiecesForKind(src.pieces, k);
+      try { localStorage.setItem(SPLIT_KEY, JSON.stringify(profiles)); } catch(e){}
+    } finally {
+      isSwitching = false;
+    }
+    if (typeof fillForm === "function") fillForm();
+    if (typeof origSave === "function") origSave();
+    if (typeof render === "function") render();
+  }
+
+  // Reemplazar el listener de #material para evitar que bindMetal() pise el perfil antes de cambiar
+  const oldMatSel = document.getElementById("material");
+  if (oldMatSel){
+    const newMatSel = oldMatSel.cloneNode(true);
+    oldMatSel.replaceWith(newMatSel);
+    newMatSel.value = activeKind;
+    newMatSel.addEventListener("change", e => {
+      const target = e.target.value === "metal" ? "metal" : "wood";
+      switchMaterialProfile(target, false);
+      if (typeof flag === "function"){
+        flag(target === "metal"
+          ? "🔩 Plan de Chapa activo (plancha, precio y piezas de chapa independientes)"
+          : "🪵 Plan de Madera activo (tablero, precio y piezas de madera independientes)");
+      }
+    });
+  }
+
+  // Asegurar que toda pieza nueva agregada a mano quede etiquetada con su material actual
+  const origSave = window.save;
+  if (typeof origSave === "function"){
+    window.save = function(){
+      if (!isSwitching) saveCurrentIntoProfile();
+      return origSave.apply(this, arguments);
+    };
+  }
+
+  // Calcular un perfil (wood o metal) de forma aislada sin alterar el estado global
+  function computeIsolatedProfile(kind){
+    const k = kind === "metal" ? "metal" : "wood";
+    const prof = profiles[k] || defaultProfile(k);
+    const backup = {
+      board: state.board,
+      cut: state.cut,
+      pieces: state.pieces
+    };
+    isSwitching = true;
+    try {
+      state.board  = Object.assign(defaultProfile(k).board, prof.board);
+      state.cut    = Object.assign(defaultProfile(k).cut, prof.cut, { material: k });
+      state.pieces = cleanPiecesForKind(prof.pieces, k);
+      return compute();
+    } finally {
+      state.board  = backup.board;
+      state.cut    = backup.cut;
+      state.pieces = backup.pieces;
+      isSwitching = false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 2. CUADROS DE OPTIMIZACIÓN SEPARADOS (MADERA Y CHAPA NUNCA SE MEZCLAN)
+  // -------------------------------------------------------------------------
+  function renderDualSwitchBar(){
+    const setupCol = document.querySelector("#viewCorte .setup");
+    if (!setupCol) return;
+    let bar = document.getElementById("dualCorteBar");
+    if (!bar){
+      bar = document.createElement("div");
+      bar.id = "dualCorteBar";
+      bar.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;padding:10px;background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);box-shadow:var(--shadow)";
+      setupCol.prepend(bar);
+    }
+    const nW = (profiles.wood?.pieces || []).reduce((s,p) => s + (+p.qty || 1), 0);
+    const nM = (profiles.metal?.pieces || []).reduce((s,p) => s + (+p.qty || 1), 0);
+    const pW = +(profiles.wood?.board?.price || 0);
+    const pM = +(profiles.metal?.board?.price || 0);
+
+    bar.innerHTML = `
+      <button type="button" class="btn ${activeKind === 'wood' ? 'primary' : 'quiet'}" data-switch-corte="wood" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px">
+        <span>🪵 <b>Plan de Madera (${nW} pz)</b></span>
+        <small style="font-size:11.5px;opacity:.85">${pW > 0 ? "$ " + f0.format(pW) + "/tablero" : "Sin precio cargado"}</small>
+      </button>
+      <button type="button" class="btn ${activeKind === 'metal' ? 'primary' : 'quiet'}" data-switch-corte="metal" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px">
+        <span>🔩 <b>Plan de Chapa (${nM} pz)</b></span>
+        <small style="font-size:11.5px;opacity:.85">${pM > 0 ? "$ " + f0.format(pM) + (profiles.metal?.cut?.priceBy === 'kg' ? '/kg' : '/plancha') : "Sin precio cargado"}</small>
+      </button>
+    `;
+  }
+
+  // Renderiza un cuadro de optimización adicional e independiente si el otro material también tiene piezas
+  function renderOtherMaterialBox(){
+    const outCol = document.querySelector("#viewCorte .output");
+    if (!outCol) return;
+
+    // Etiquetar el título del cuadro principal para que quede claro qué material muestra
+    const mainPlanTitle = outCol.querySelector(".planhead h2");
+    if (mainPlanTitle){
+      mainPlanTitle.innerHTML = `<span class="n">4</span>Esquema de corte — ${activeKind === "metal" ? "🔩 Chapa metálica" : "🪵 Madera / Tablero"}`;
+    }
+    const mainCostTitle = outCol.querySelector(".costs > h2");
+    if (mainCostTitle){
+      mainCostTitle.innerHTML = `<span class="n">5</span>Costos del despiece — ${activeKind === "metal" ? "🔩 Chapa metálica" : "🪵 Madera / Tablero"}`;
+    }
+
+    const otherKind = activeKind === "metal" ? "wood" : "metal";
+    const otherProf = profiles[otherKind];
+    let otherCard = document.getElementById("otherMaterialOptCard");
+
+    if (!otherProf || !Array.isArray(otherProf.pieces) || !otherProf.pieces.length){
+      if (otherCard) otherCard.remove();
+      return;
+    }
+
+    const cOther = computeIsolatedProfile(otherKind);
+    if (!otherCard){
+      otherCard = document.createElement("section");
+      otherCard.className = "card";
+      otherCard.id = "otherMaterialOptCard";
+      outCol.appendChild(otherCard);
+    }
+
+    const isMet = otherKind === "metal";
+    const title = isMet ? "🔩 Cuadro de Optimización Independiente: Chapa Metálica" : "🪵 Cuadro de Optimización Independiente: Madera / Tablero";
+    const unitName = isMet ? "Plancha" : "Placa";
+    const boardsHTML = cOther.nBoards
+      ? cOther.res.boards.map((b, i) => {
+          b.uidx = "other_" + i;
+          const used = b.placed.reduce((s,p) => s + p.w*p.h, 0) / 1e6;
+          const rate = cOther.boardArea > 0 ? (used / cOther.boardArea) * 100 : 0;
+          return `<div class="board">
+            <header>
+              <h3>${unitName} ${i + 1} (${mmv(cOther.BL0)} × ${mmv(cOther.BW0)} mm)</h3>
+              <span class="meta">${b.placed.length} piezas · ${pct(rate)} aprovechado · Costo: <b>${money(cOther.total)}</b></span>
+            </header>
+            ${boardSVG(b, cOther.BL, cOther.BW, cOther.kerf)}
+          </div>`;
+        }).join("")
+      : `<div class="placeholder">Cargá las medidas de ${isMet ? "la plancha" : "el tablero"} en el plan de ${isMet ? "Chapa" : "Madera"}.</div>`;
+
+    otherCard.innerHTML = `
+      <div class="planhead" style="background:var(--panel-2)">
+        <h2><span class="n">${isMet ? "🔩" : "🪵"}</span>${title}</h2>
+        <div class="stats">
+          <span>${isMet ? "Planchas" : "Tableros"} <b>${cOther.nBoards}</b></span>
+          <span>Total <b>${money(cOther.total)}</b></span>
+        </div>
+      </div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--rule-2);display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="hint" style="margin:0">Este material se optimiza y cotiza en su propio tablero (${mmv(cOther.BL0)}×${mmv(cOther.BW0)} mm · Precio base: ${money(cOther.sheetPrice)}).</span>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="btn quiet" data-switch-corte="${otherKind}">✎ Editar precio / piezas de ${isMet ? "Chapa" : "Madera"}</button>
+          ${cOther.nBoards ? `<button type="button" class="btn primary" data-send-quote-kind="${otherKind}">Pasar ${money(cOther.woodForQuote)} al cotizador</button>` : ""}
+        </div>
+      </div>
+      <div class="boards">${boardsHTML}</div>
+    `;
+  }
+
+  const origRender = window.render;
+  if (typeof origRender === "function"){
+    window.render = function(){
+      if (!isSwitching) saveCurrentIntoProfile();
+      origRender.apply(this, arguments);
+      renderDualSwitchBar();
+      renderOtherMaterialBox();
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // 3. PASAR AL COTIZADOR SIN PISAR MADERA CON CHAPA
+  // -------------------------------------------------------------------------
+  function sendKindToQuote(kind){
+    saveCurrentIntoProfile();
+    const k = (kind === "metal" || kind === "wood") ? kind : activeKind;
+    const c = computeIsolatedProfile(k);
+    if (!c || !c.nBoards) return;
+
+    const placed = c.res.boards.reduce((s,b) => s.concat(b.placed), []);
+    const n = placed.length;
+    const isMetal = (k === "metal");
+    const tagKey = isMetal ? "fromCutMetal" : "fromCutWood";
+
+    const name = c.costMode === "used"
+      ? `${isMetal ? "Chapa" : "Madera"} cortada (${f0.format(n)} pieza${n === 1 ? "" : "s"}, ${m2(c.usedArea)})`
+      : `${isMetal ? "Planchas de chapa" : "Tableros de madera"} (${f0.format(c.nBoards)} × ${money(c.sheetPrice)})`;
+    const price = Math.round(c.woodForQuote * 100) / 100;
+    const dims = (c.costMode === "used" && n === 1)
+      ? (placed[0].rotated
+          ? { l: Math.round(placed[0].h), w: Math.round(placed[0].w) }
+          : { l: Math.round(placed[0].w), w: Math.round(placed[0].h) })
+      : { l: 0, w: 0 };
+
+    // Limpiar cualquier ítem viejo con la marca ambigua `fromCut` del mismo tipo
+    let it = mat.items.find(x => x[tagKey] && x.kind === "tablero");
+    if (it){
+      Object.assign(it, { name, price, priceDate: todayISO() }, dims);
+    } else {
+      it = Object.assign(matItemDefaults("tablero"),
+        { id: uid(), name, price, priceDate: todayISO(), [tagKey]: true, from3d: true }, dims);
+      mat.items.unshift(it);
+    }
+    saveMat(); renderMat(); setTab("mat");
+    flag(isMetal ? "🔩 Chapa pasada al cotizador (ítem independiente)" : "🪵 Madera pasada al cotizador (ítem independiente)");
+  }
+
+  window.sendToQuote = function(){
+    sendKindToQuote(activeKind);
+  };
+
+  // -------------------------------------------------------------------------
+  // 4. ENVÍO DESDE DISEÑO 3D A PLANOS SEPARADOS (MADERA Y CHAPA)
+  // -------------------------------------------------------------------------
+  window.d3SendCorte = function(){
+    saveCurrentIntoProfile();
+    const visible = (d3.pieces || []).filter(p => {
+      if (p.hw) return false;
+      if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) return false;
+      return !p._sent;
+    });
+
+    const woods  = visible.filter(p => p.kind === "madera");
+    const sheets = visible.filter(p => p.kind === "chapa" || p.kind === "plegada");
+
+    if (!woods.length && !sheets.length){
+      if (typeof flag === "function") flag("Nada nuevo para mandar: tocá «Reenviar todo» si querés repetir");
+      return;
+    }
+
+    let addedW = 0, addedM = 0;
+
+    if (woods.length){
+      if (!profiles.wood) profiles.wood = defaultProfile("wood");
+      const pw = profiles.wood;
+      pw.pieces = cleanPiecesForKind(pw.pieces, "wood");
+      const thicks = new Set(woods.map(p => String(p.t)));
+      if (thicks.size === 1) pw.board.thick = +[...thicks][0];
+      for (const p of woods){
+        const L = Math.round(p.l), W = Math.round(p.w);
+        const ex = pw.pieces.find(q => q.from3d && q.name === p.name && q.l === L && q.w === W && !q.grain);
+        if (ex) ex.qty += 1;
+        else pw.pieces.push({ id: uid(), name: p.name, l: L, w: W, qty: 1, grain: false, from3d: true, matKind: "wood" });
+        p._sent = true; addedW++;
+      }
+    }
+
+    if (sheets.length){
+      if (!profiles.metal) profiles.metal = defaultProfile("metal");
+      const pm = profiles.metal;
+      pm.pieces = cleanPiecesForKind(pm.pieces, "metal");
+      const thicks = new Set(sheets.map(p => String(p.t)));
+      if (thicks.size === 1) pm.board.thick = +[...thicks][0];
+      let bendsAdded = 0;
+      for (const p of sheets){
+        const l = Math.round(p.kind === "plegada" ? p.devA : p.l);
+        const w = Math.round(p.kind === "plegada" ? p.devB : p.w);
+        const nm = p.kind === "plegada" ? p.name + " — desarrollo" : p.name;
+        const ex = pm.pieces.find(q => q.from3d && q.name === nm && q.l === l && q.w === w);
+        if (ex) ex.qty += 1;
+        else pm.pieces.push({ id: uid(), name: nm, l, w, qty: 1, grain: false, from3d: true, matKind: "metal" });
+        if (p.kind === "plegada") bendsAdded += p.bends || 0;
+        p._sent = true; addedM++;
+      }
+      if (bendsAdded){
+        pm.cut.bends = (pm.cut.bends || 0) + bendsAdded;
+        pm.cut.bends3d = (pm.cut.bends3d || 0) + bendsAdded;
+      }
+    }
+
+    const showKind = (addedW > 0 && addedM === 0) ? "wood"
+                   : (addedM > 0 && addedW === 0) ? "metal"
+                   : activeKind;
+    switchMaterialProfile(showKind, true);
+    if (typeof d3OutRender === "function") d3OutRender();
+    if (typeof d3Save === "function") d3Save();
+
+    const parts = [];
+    if (addedW) parts.push(`${addedW} de madera`);
+    if (addedM) parts.push(`${addedM} de chapa`);
+    if (typeof flag === "function"){
+      flag(`✅ Enviadas en planos separados: ${parts.join(" y ")}`);
+    }
+  };
+
+  // Reemplazar el botón #d3ToCorte para quitar el listener viejo atado en d3Bind()
+  const oldBtnToCorte = document.getElementById("d3ToCorte");
+  if (oldBtnToCorte){
+    const newBtnToCorte = oldBtnToCorte.cloneNode(true);
+    oldBtnToCorte.replaceWith(newBtnToCorte);
+    newBtnToCorte.addEventListener("click", () => window.d3SendCorte());
+  }
+
+  window.d3RecalcAllFrom3D = function(){
+    saveCurrentIntoProfile();
+    ["wood", "metal"].forEach(k => {
+      if (!profiles[k]) profiles[k] = defaultProfile(k);
+      profiles[k].pieces = cleanPiecesForKind(profiles[k].pieces, k).filter(p => !p.from3d);
+      profiles[k].cut.bends = Math.max(0, (profiles[k].cut.bends || 0) - (profiles[k].cut.bends3d || 0));
+      profiles[k].cut.bends3d = 0;
+    });
+
+    mat.items = (mat.items || []).filter(it => !it.from3d || it.fromCutWood || it.fromCutMetal);
+
+    (d3.pieces || []).forEach(p => {
+      const hidden = p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod];
+      p._sent = !!(p.hw || hidden);
+    });
+
+    window.d3SendCorte();
+    if (typeof d3SendMat === "function") d3SendMat();
+
+    if (Array.isArray(d3.lastConsumables)){
+      d3.lastConsumables.forEach(c => {
+        if (c.mod && c.mod !== "base" && d3.hideMods && d3.hideMods[c.mod]) return;
+        mat.items.push(sanitizeMatItem(Object.assign({}, c, { from3d: true })));
+      });
+    }
+    save(); render(); saveMat(); renderMat();
+  };
+
+  // Limpiar ambos perfiles al tocar "Empezar de cero"
+  document.getElementById("btnReset")?.addEventListener("click", () => {
+    try { localStorage.removeItem(SPLIT_KEY); } catch(e){}
+  }, true);
+
+  // -------------------------------------------------------------------------
+  // 5. CONTROL GUIADO EN 3D + GUARDADO UNIFICADO 3 EN 1 (CON SOPORTE DUAL)
+  // -------------------------------------------------------------------------
   const origMove = window.d3Move;
   if (typeof origMove === "function"){
     window.d3Move = function(e){
@@ -5741,9 +6161,6 @@ render();
       }
     };
   }
-
-  // 2. Sistema de Guardado Unificado 3 en 1 (compatible con book.entries)
-  const FULL_BOOK_KEY = "taller_full_book_v3";
 
   function loadFullMap(){
     try { return JSON.parse(localStorage.getItem(FULL_BOOK_KEY) || "{}"); }
@@ -5783,6 +6200,7 @@ render();
   }
 
   window.saveUnifiedFurniture = function(customName){
+    saveCurrentIntoProfile();
     const name = String(customName || getProjectName() || "").trim();
     if (!name){
       if (typeof flag === "function") flag("⚠️ Escribí primero un nombre para el mueble");
@@ -5792,7 +6210,8 @@ render();
     const id = makeSafeId(name);
     const snap = {
       id, name, savedAt: new Date().toISOString(),
-      corte: typeof state !== "undefined" ? JSON.parse(JSON.stringify(state)) : null,
+      corte: JSON.parse(JSON.stringify(state)),
+      corteDual: JSON.parse(JSON.stringify(profiles)),
       mat: typeof mat !== "undefined" ? JSON.parse(JSON.stringify(mat)) : null,
       d3: typeof d3 !== "undefined" ? JSON.parse(JSON.stringify({
         pieces: d3.pieces || [],
@@ -5818,7 +6237,7 @@ render();
       if (typeof renderBook === "function") renderBook();
     }
     renderSharedBookLists();
-    if (typeof flag === "function") flag("💾 Mueble guardado en Corte, Materiales y 3D: " + name);
+    if (typeof flag === "function") flag("💾 Mueble guardado en Corte (Madera + Chapa), Materiales y 3D: " + name);
   };
 
   window.loadUnifiedFurniture = function(key){
@@ -5828,9 +6247,16 @@ render();
       if (typeof flag === "function") flag("No se encontró el mueble guardado");
       return;
     }
-    if (snap.corte && typeof state !== "undefined"){
-      Object.assign(state, JSON.parse(JSON.stringify(snap.corte)));
-      fillForm(); save(); render();
+    if (snap.corteDual && snap.corteDual.wood && snap.corteDual.metal){
+      profiles = JSON.parse(JSON.stringify(snap.corteDual));
+      profiles.wood.pieces  = cleanPiecesForKind(profiles.wood.pieces, "wood");
+      profiles.metal.pieces = cleanPiecesForKind(profiles.metal.pieces, "metal");
+      switchMaterialProfile(profiles.active || "wood", true);
+    } else if (snap.corte && typeof state !== "undefined"){
+      const k = snap.corte.cut?.material === "metal" ? "metal" : "wood";
+      profiles[k] = JSON.parse(JSON.stringify(snap.corte));
+      profiles[k].pieces = cleanPiecesForKind(profiles[k].pieces, k);
+      switchMaterialProfile(k, true);
     }
     if (snap.mat && typeof mat !== "undefined"){
       Object.assign(mat, JSON.parse(JSON.stringify(snap.mat)));
@@ -5879,14 +6305,15 @@ render();
     const html = !list.length
       ? '<p class="empty" style="margin:6px 0">Todavía no hay muebles guardados (3 en 1).</p>'
       : list.map(s => {
-          const nC = s.corte && Array.isArray(s.corte.pieces) ? s.corte.pieces.length : 0;
+          const nW = s.corteDual?.wood?.pieces?.length || (s.corte?.pieces?.length || 0);
+          const nCh = s.corteDual?.metal?.pieces?.length || 0;
           const nM = s.mat && Array.isArray(s.mat.items) ? s.mat.items.length : 0;
           const n3 = s.d3 && Array.isArray(s.d3.pieces) ? s.d3.pieces.length : 0;
           const safe = esc(s.name);
           return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--rule);border-radius:var(--r);margin-top:6px;background:var(--panel-2)">
             <div>
               <b>${safe}</b>
-              <div class="hint" style="margin:2px 0 0">Corte: ${nC} pz · Mat: ${nM} ítems · 3D: ${n3} pz</div>
+              <div class="hint" style="margin:2px 0 0">Madera: ${nW} pz · Chapa: ${nCh} pz · Mat: ${nM} ítems · 3D: ${n3} pz</div>
             </div>
             <div style="display:flex;gap:6px">
               <button type="button" class="btn quiet" data-uload="${safe}">📂 Cargar 3 en 1</button>
@@ -5936,6 +6363,10 @@ render();
   }
 
   document.addEventListener("click", e => {
+    const sw = e.target.closest("[data-switch-corte]");
+    if (sw){ switchMaterialProfile(sw.dataset.switchCorte, false); return; }
+    const sq = e.target.closest("[data-send-quote-kind]");
+    if (sq){ sendKindToQuote(sq.dataset.sendQuoteKind); return; }
     const ld = e.target.closest("[data-uload]");
     if (ld){ window.loadUnifiedFurniture(ld.dataset.uload); return; }
     const dl = e.target.closest("[data-udel]");
@@ -5943,286 +6374,952 @@ render();
   });
 
   injectSharedBookUI();
+  switchMaterialProfile(activeKind, true);
   renderSharedBookLists();
 })();
 </script>
-<!-- ====== PARCHE: PLANES DE CORTE Y PRECIOS INDEPENDIENTES (MADERA VS CHAPA) ====== -->
+<!-- ====== FASE STOCK: INVENTARIO DE TALLER + FOTO DE LIBRETA + FABRICACIÓN DE MUEBLES ====== -->
+<style>
+  .stk-tag { display:inline-block; font-family:var(--narrow); font-size:11.5px; font-weight:700; text-transform:uppercase; padding:2px 7px; border-radius:999px; border:1px solid var(--rule); background:var(--panel-2); color:var(--ink); }
+  .stk-tag.perfil { background:#d7e3e8; border-color:#8faab5; color:#143e45; }
+  .stk-tag.madera { background:#ead9c2; border-color:#c4a77d; color:#4a3219; }
+  .stk-tag.chapa  { background:#d9dde0; border-color:#98a2a8; color:#223036; }
+  .stk-tag.insumo { background:#d8e8d5; border-color:#8ab382; color:#1e4618; }
+  .stk-row { display:grid; grid-template-columns:auto 1fr auto auto; gap:10px; align-items:center; padding:10px 12px; border:1px solid var(--rule); border-radius:var(--r); background:var(--panel); margin-bottom:8px; }
+  .stk-row.low { border-color:var(--cut); background:var(--cut-soft); }
+  .stk-qty-box { display:flex; align-items:center; gap:5px; font-family:var(--narrow); }
+  .stk-qty-box input { width:82px !important; text-align:right; padding:4px 6px !important; }
+  .stk-sim-box { margin-top:12px; padding:12px; border:1px solid var(--rule); border-radius:var(--r); background:var(--field); }
+  .stk-sim-line { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 0; border-bottom:1px dashed var(--rule-2); font-size:13.5px; }
+  .stk-sim-line:last-child { border-bottom:none; }
+  .stk-ok { color:var(--keep); font-weight:700; font-family:var(--narrow); }
+  .stk-lack { color:var(--cut); font-weight:700; font-family:var(--narrow); }
+  .stk-preview-Img { max-height:140px; border:1px solid var(--rule); border-radius:var(--r); display:none; margin-top:8px; }
+  @media (max-width:600px){ .stk-row { grid-template-columns:1fr; } }
+</style>
 <script>
 (function(){
-  const SPLIT_KEY = "taller_corte_dual_v1";
+  const STOCK_KEY = "taller_stock_v1";
+  const SUPA_URL = "https://ivyagavbhsyzvikzhmhe.supabase.co";
+  const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2eWFnYXZiaHN5enZpa3pobWhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM0MDMzMDIsImV4cCI6MjEwODk3OTMwMn0.c0beXPjYqt3X8PSs7xbKEmOuEhiAFvoQqNm4HC8iyPo";
 
-  // Configuraciones independientes por defecto para Madera y Chapa
-  function defaultProfile(kind){
-    if (kind === "metal"){
-      return {
-        board: { price: 0, length: 2000, width: 1000, thick: 1.24 },
-        cut: {
-          kerf: 2, waste: 10, rotate: true, service: 0, serviceMode: "total", costMode: "used",
-          material: "metal", metalType: "acero", priceBy: "sheet", method: "amoladora",
-          maxCut: 0, trim: 0, minCharge: 0, bends: 0, bendPrice: 0, holes: 0, holePrice: 0, bends3d: 0
-        },
-        pieces: []
-      };
-    }
-    return {
-      board: { price: 0, length: 2600, width: 1830, thick: 18 },
-      cut: {
-        kerf: 3, waste: 10, rotate: true, service: 0, serviceMode: "total", costMode: "used",
-        material: "wood", metalType: "acero", priceBy: "sheet", method: "",
-        maxCut: 0, trim: 0, minCharge: 0, bends: 0, bendPrice: 0, holes: 0, holePrice: 0, bends3d: 0
-      },
-      pieces: []
-    };
+  // -------------------------------------------------------------------------
+  // 1. INYECTAR PESTAÑA Y VISTA DE STOCK (100% AISLADA DE PRECIOS Y CORTES)
+  // -------------------------------------------------------------------------
+  const tabsBar = document.querySelector(".tabs");
+  const viewD3 = document.getElementById("viewD3");
+  if (!tabsBar || !viewD3) return;
+
+  const tabBtn = document.createElement("button");
+  tabBtn.className = "tab";
+  tabBtn.id = "tabStock";
+  tabBtn.type = "button";
+  tabBtn.setAttribute("role", "tab");
+  tabBtn.setAttribute("aria-selected", "false");
+  tabBtn.setAttribute("aria-controls", "viewStock");
+  tabBtn.innerHTML = '<span class="long">📦 Stock de taller</span><span class="short">Stock</span>';
+  tabsBar.appendChild(tabBtn);
+
+  const viewStock = document.createElement("div");
+  viewStock.className = "view";
+  viewStock.id = "viewStock";
+  viewStock.hidden = true;
+  viewStock.innerHTML = `
+    <div class="qbanner noprint" style="margin-bottom:0">
+      <span>🔒 <b>Modo Inventario Físico:</b> Todo lo que cargues o descuentes acá controla tus materiales en el taller y <b>jamás altera los precios de Corte, Cotizador ni Presupuestos</b>.</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn quiet" id="btnStkSyncPull" type="button" title="Traer stock guardado en Supabase">☁️ Traer de Nube</button>
+        <button class="btn primary" id="btnStkSyncPush" type="button" title="Guardar copia del stock en Supabase">☁️ Subir a Nube</button>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <!-- COLUMNA IZQUIERDA: CARGA POR FOTO DE LIBRETA + MANUAL + FABRICACIÓN -->
+      <div class="setup">
+
+        <!-- TARJETA 1: ESCÁNER DE LIBRETA POR FOTO O TEXTO RÁPIDO -->
+        <section class="card">
+          <h2><span class="n">1</span> 📷 Cargar desde foto de libreta</h2>
+          <div class="body">
+            <p class="hint" style="margin-top:0">Sacale una foto a tu libreta donde anotaste los materiales (ej: <b>"3 tubos 20x20 6m, 5 tubos 30x30, 2 placas pino 18mm"</b>) o escribí/dictá el texto abajo.</p>
+
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+              <label class="btn primary" style="cursor:pointer;flex:1;text-align:center">
+                📷 Sacar / Subir foto de libreta
+                <input type="file" id="stkPhotoInp" accept="image/*" capture="environment" hidden>
+              </label>
+              <button class="btn quiet" id="stkBtnToggleAiKey" type="button" title="Configurar IA Vision para letra manuscrita difícil">⚙️ IA Manuscrita</button>
+            </div>
+
+            <div id="stkAiKeyBox" hidden style="margin-top:8px;padding:8px;background:var(--panel-2);border:1px solid var(--rule);border-radius:var(--r)">
+              <label><span class="lab">API Key Gemini (Opcional — mejora lectura de letra cursiva a mano)</span>
+                <input type="password" id="stkGeminiKey" placeholder="Pegá tu AIzaSy... (si queda vacío usa OCR local gratuito)">
+              </label>
+            </div>
+
+            <img id="stkPhotoPreview" class="stk-preview-Img" alt="Vista previa de libreta">
+            <div id="stkOcrStatus" class="hint" style="font-weight:600;color:var(--accent)"></div>
+
+            <label style="margin-top:10px">
+              <span class="lab">Texto detectado de la libreta (podés editarlo o escribir directo)</span>
+              <textarea id="stkNotebookText" rows="3" style="width:100%;font:inherit;padding:8px;border:1px solid var(--rule);border-radius:var(--r);background:var(--field)" placeholder="Ej: 3 tubos 20x20 6m, 5 tubos 30x30, 2 placas pino 18mm 2600x1830, 10 ruedas"></textarea>
+            </label>
+
+            <div id="stkParsedPreview" style="margin-top:8px"></div>
+
+            <div class="savebar" style="margin-top:10px">
+              <button class="btn quiet" id="stkBtnParse" type="button">🔍 Analizar anotación</button>
+              <button class="btn primary" id="stkBtnCommitNotes" type="button">+ Sumar todo al Stock</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- TARJETA 2: AGREGAR MATERIAL MANUALMENTE -->
+        <section class="card">
+          <h2><span class="n">2</span> + Agregar material etiquetado</h2>
+          <div class="body">
+            <div class="grid g2">
+              <label><span class="lab">Categoría / Etiqueta</span>
+                <select id="stkKind">
+                  <option value="perfil">🔩 Perfil / Tubo estructural</option>
+                  <option value="madera">🪵 Tablero / Madera</option>
+                  <option value="chapa">⚙️ Chapa metálica / Malla</option>
+                  <option value="insumo">🧰 Herraje / Insumo / Pintura</option>
+                </select>
+              </label>
+              <label><span class="lab">Código / Medida clave</span>
+                <input type="text" id="stkTagCode" placeholder="Ej: 20x20, 30x30, pino 18mm">
+              </label>
+              <label style="grid-column:1/-1"><span class="lab">Nombre descriptivo</span>
+                <input type="text" id="stkName" placeholder="Ej: Caño estructural 20x20 x 1.6 mm">
+              </label>
+              <label><span class="lab" id="stkLblUnitLen">Largo por barra / placa (mm)</span>
+                <input type="number" id="stkUnitLen" value="6000" min="1" step="1">
+              </label>
+              <label><span class="lab" id="stkLblQty">Cantidad en stock (barras / un.)</span>
+                <input type="number" id="stkQty" value="1" min="0" step="0.1">
+              </label>
+              <label><span class="lab">Alerta de stock mínimo</span>
+                <input type="number" id="stkMin" value="1" min="0" step="0.5">
+              </label>
+              <div style="display:flex;align-items:flex-end">
+                <button class="btn primary" id="stkBtnAddManual" type="button" style="width:100%">+ Guardar en Stock</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- TARJETA 3: FABRICAR MUEBLES GUARDADOS Y DESCONTAR STOCK -->
+        <section class="card">
+          <h2><span class="n">3</span> 🔨 Fabricar mueble y descontar stock</h2>
+          <div class="body">
+            <p class="hint" style="margin-top:0">Elegí uno o varios muebles guardados. El sistema calcula qué materiales lleva y los descuenta de tu stock físico sin alterar ninguna cotización.</p>
+
+            <div class="grid g3" style="margin-top:10px;align-items:end">
+              <label style="grid-column:1/3"><span class="lab">Mueble guardado</span>
+                <select id="stkFurnSelect"></select>
+              </label>
+              <label><span class="lab">Cantidad a fabricar</span>
+                <input type="number" id="stkFurnQty" value="1" min="1" step="1">
+              </label>
+            </div>
+
+            <div class="savebar" style="margin-top:8px">
+              <button class="btn quiet" id="stkBtnAddQueue" type="button">+ Sumar a lote de fabricación</button>
+            </div>
+
+            <div id="stkProdQueue" style="margin-top:10px"></div>
+            <div id="stkSimResult"></div>
+
+            <button class="btn primary" id="stkBtnProduce" type="button" style="width:100%;margin-top:12px" disabled>🔨 Registrar Fabricación y Descontar del Stock</button>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- COLUMNA DERECHA: INVENTARIO ETIQUETADO + HISTORIAL DE PRODUCCIÓN -->
+      <div class="output">
+
+        <section class="card">
+          <div class="planhead">
+            <h2><span class="n">4</span>Inventario actual por etiqueta</h2>
+            <div class="stats" id="stkSummaryStats"></div>
+          </div>
+          <div class="body">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px" id="stkFilterChips">
+              <button type="button" class="chip" data-sflt="all" aria-pressed="true">Todos</button>
+              <button type="button" class="chip" data-sflt="perfil" aria-pressed="false">🔩 Perfiles / Tubos</button>
+              <button type="button" class="chip" data-sflt="madera" aria-pressed="false">🪵 Maderas</button>
+              <button type="button" class="chip" data-sflt="chapa" aria-pressed="false">⚙️ Chapas</button>
+              <button type="button" class="chip" data-sflt="insumo" aria-pressed="false">🧰 Herrajes / Insumos</button>
+            </div>
+
+            <div id="stkItemsList"></div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2><span class="n">5</span> Historial de muebles fabricados <small id="stkHistCount"></small></h2>
+          <div class="body">
+            <div id="stkHistoryList"></div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  `;
+  viewD3.after(viewStock);
+
+  // Integrar con el sistema de pestañas nativo
+  if (typeof TABS !== "undefined" && Array.isArray(TABS)){
+    TABS.push(["tabStock", "stock", "viewStock"]);
   }
-
-  function loadProfiles(){
-    try {
-      const raw = JSON.parse(localStorage.getItem(SPLIT_KEY) || "null");
-      if (raw && raw.wood && raw.metal) return raw;
-    } catch(e){}
-    const curMat = (typeof state !== "undefined" && state.cut && state.cut.material === "metal") ? "metal" : "wood";
-    const profs = { wood: defaultProfile("wood"), metal: defaultProfile("metal"), active: curMat };
-    if (typeof state !== "undefined"){
-      profs[curMat] = JSON.parse(JSON.stringify(state));
-    }
-    return profs;
-  }
-
-  let profiles = loadProfiles();
-
-  function saveCurrentIntoProfile(){
-    if (typeof state === "undefined" || !state.cut) return;
-    const k = state.cut.material === "metal" ? "metal" : "wood";
-    profiles.active = k;
-    profiles[k] = {
-      board: JSON.parse(JSON.stringify(state.board || {})),
-      cut: JSON.parse(JSON.stringify(state.cut || {})),
-      pieces: JSON.parse(JSON.stringify(state.pieces || []))
-    };
-    try { localStorage.setItem(SPLIT_KEY, JSON.stringify(profiles)); } catch(e){}
-  }
-
-  function switchMaterialProfile(targetKind, skipSaveCurrent){
-    const k = targetKind === "metal" ? "metal" : "wood";
-    if (!skipSaveCurrent) saveCurrentIntoProfile();
-    if (!profiles[k]) profiles[k] = defaultProfile(k);
-
-    const src = JSON.parse(JSON.stringify(profiles[k]));
-    src.cut.material = k;
-    state.board = Object.assign(defaultProfile(k).board, src.board);
-    state.cut   = Object.assign(defaultProfile(k).cut, src.cut);
-    state.pieces = Array.isArray(src.pieces) ? src.pieces : [];
-    profiles.active = k;
-
-    try { localStorage.setItem(SPLIT_KEY, JSON.stringify(profiles)); } catch(e){}
-    if (typeof fillForm === "function") fillForm();
-    if (typeof save === "function") save();
-    if (typeof render === "function") render();
-    renderDualSwitchBar();
-  }
-
-  // 1. Interceptar el selector #material para que al cambiar entre Madera y Chapa
-  // cargue su propio precio, medidas de placa, disco y lista de piezas
-  const matSel = document.getElementById("material");
-  if (matSel){
-    matSel.addEventListener("mousedown", () => saveCurrentIntoProfile());
-    matSel.addEventListener("focus", () => saveCurrentIntoProfile());
-    matSel.addEventListener("change", e => {
-      const target = e.target.value === "metal" ? "metal" : "wood";
-      switchMaterialProfile(target, true);
-      if (typeof flag === "function"){
-        flag(target === "metal"
-          ? "🔩 Plan de Chapa activo (precio, plancha y piezas de chapa)"
-          : "🪵 Plan de Madera activo (precio, tablero y piezas de madera)");
+  const origApplyTab = window.applyTab;
+  if (typeof origApplyTab === "function"){
+    window.applyTab = function(tab){
+      origApplyTab.apply(this, arguments);
+      if (tab === "stock"){
+        const bSpan = document.querySelector(".brand span");
+        if (bSpan) bSpan.textContent = "control de stock";
+        renderStockAll();
       }
-    }, true);
+    };
   }
+  tabBtn.addEventListener("click", () => {
+    if (typeof setTab === "function") setTab("stock");
+  });
 
-  // Guardar automáticamente en el perfil correspondiente cada vez que se edita algo en Corte
-  const origSave = window.save;
-  if (typeof origSave === "function"){
-    window.save = function(){
-      saveCurrentIntoProfile();
-      return origSave.apply(this, arguments);
+  // -------------------------------------------------------------------------
+  // 2. ESTADO DEL STOCK Y NORMALIZACIÓN DE ETIQUETAS
+  // -------------------------------------------------------------------------
+  function loadStockState(){
+    try {
+      const raw = JSON.parse(localStorage.getItem(STOCK_KEY) || "null");
+      if (raw && Array.isArray(raw.items)) return raw;
+    } catch(e){}
+    return {
+      items: [
+        { id: "s_sq20", kind: "perfil", tag: "20x20", name: "Caño estructural 20×20", unitLen: 6000, totalMm: 18000, minUnits: 2 },
+        { id: "s_sq30", kind: "perfil", tag: "30x30", name: "Caño estructural 30×30", unitLen: 6000, totalMm: 30000, minUnits: 2 }
+      ],
+      history: []
     };
   }
 
-  // 2. Separar el envío al Cotizador ("Pasar al cotizador") para que Madera y Chapa
-  // creen DOS ítems distintos (fromCutWood y fromCutMetal) y NO se pisen el precio
-  window.sendToQuote = function(){
-    const c = last;
-    if (!c || !c.nBoards) return;
-    const placed = c.res.boards.reduce((s,b) => s.concat(b.placed), []);
-    const n = placed.length;
-    const isMetal = !!c.metal;
-    const tagKey = isMetal ? "fromCutMetal" : "fromCutWood";
+  let stock = loadStockState();
+  let activeFilter = "all";
+  let prodQueue = []; // [{ key, name, qty }]
+  let parsedDraft = [];
 
-    const name = c.costMode === "used"
-      ? `${isMetal ? "Chapa" : "Madera"} cortada (${f0.format(n)} pieza${n === 1 ? "" : "s"}, ${m2(c.usedArea)})`
-      : `${isMetal ? "Planchas de chapa" : "Tableros de madera"} (${f0.format(c.nBoards)} × ${money(c.sheetPrice)})`;
-    const price = Math.round(c.woodForQuote * 100) / 100;
-    const dims = (c.costMode === "used" && n === 1)
-      ? (placed[0].rotated
-          ? { l: Math.round(placed[0].h), w: Math.round(placed[0].w) }
-          : { l: Math.round(placed[0].w), w: Math.round(placed[0].h) })
-      : { l: 0, w: 0 };
+  function saveStock(){
+    try { localStorage.setItem(STOCK_KEY, JSON.stringify(stock)); } catch(e){}
+  }
 
-    // Buscar únicamente el ítem del mismo material (Madera o Chapa)
-    let it = mat.items.find(x => x[tagKey] && x.kind === "tablero");
-    if (it){
-      Object.assign(it, { name, price, priceDate: todayISO() }, dims);
+  // Extrae etiqueta canónica ("20x20", "30x30", "40x20", "pino 18mm", etc.)
+  function normalizeTag(str, profId){
+    const mapProf = { sq20:"20x20", sq30:"30x30", sq40:"40x40", sq50:"50x50", re4020:"40x20", re6040:"60x40" };
+    if (profId && mapProf[profId]) return mapProf[profId];
+    const s = String(str || "").toLowerCase().replace(/×/g, "x");
+    const mDim = s.match(/(\d{2,3})\s*x\s*(\d{2,3})/);
+    if (mDim) return `${mDim[1]}x${mDim[2]}`;
+    if (s.includes("sq20")) return "20x20";
+    if (s.includes("sq30")) return "30x30";
+    if (s.includes("sq40")) return "40x40";
+    if (s.includes("sq50")) return "50x50";
+    if (s.includes("re4020")) return "40x20";
+    if (s.includes("re6040")) return "60x40";
+    return s.replace(/[^a-z0-9áéíóúñ]+/g, " ").trim().slice(0, 24) || "general";
+  }
+
+  // Suma o actualiza un ítem en el stock unificando por etiqueta
+  function addOrMergeStockItem(entry){
+    const tag = normalizeTag(entry.tag || entry.name);
+    const kind = ["perfil","madera","chapa","insumo"].includes(entry.kind) ? entry.kind : "perfil";
+    const existing = stock.items.find(it => it.kind === kind && normalizeTag(it.tag) === tag);
+
+    if ( existing ){
+      if (kind === "perfil"){
+        const uLen = Number(entry.unitLen) || existing.unitLen || 6000;
+        const addMm = entry.totalMm !== undefined ? Number(entry.totalMm) : (Number(entry.qty) || 0) * uLen;
+        existing.totalMm = Math.max(0, (existing.totalMm || 0) + addMm);
+      } else if (kind === "madera" || kind === "chapa"){
+        const uM2 = Number(entry.unitM2) || existing.unitM2 || 4.758;
+        const addM2 = entry.totalM2 !== undefined ? Number(entry.totalM2) : (Number(entry.qty) || 0) * uM2;
+        existing.totalM2 = Math.max(0, (existing.totalM2 || 0) + addM2);
+      } else {
+        existing.qty = Math.max(0, (existing.qty || 0) + (Number(entry.qty) || 0));
+      }
     } else {
-      it = Object.assign(matItemDefaults("tablero"),
-        { id: uid(), name, price, priceDate: todayISO(), [tagKey]: true, from3d: true }, dims);
-      mat.items.unshift(it);
+      const uLen = Number(entry.unitLen) || 6000;
+      const uM2  = Number(entry.unitM2) || (kind === "chapa" ? 2.0 : 4.758);
+      const q    = Number(entry.qty) || 1;
+      stock.items.push({
+        id: "stk_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+        kind,
+        tag,
+        name: entry.name || (kind === "perfil" ? `Caño estructural ${tag}` : tag.toUpperCase()),
+        unitLen: uLen,
+        totalMm: kind === "perfil" ? (entry.totalMm !== undefined ? Number(entry.totalMm) : q * uLen) : 0,
+        unitM2: uM2,
+        totalM2: (kind === "madera" || kind === "chapa") ? (entry.totalM2 !== undefined ? Number(entry.totalM2) : q * uM2) : 0,
+        qty: kind === "insumo" ? q : 0,
+        minUnits: Number(entry.minUnits) || 1
+      });
     }
-    saveMat(); renderMat(); setTab("mat");
-    flag(isMetal ? "🔩 Chapa pasada al cotizador (separada de la madera)" : "🪵 Madera pasada al cotizador (separada de la chapa)");
-  };
+    saveStock();
+    renderStockAll();
+  }
 
-  // 3. d3SendCorte dual: envía las maderas al perfil de Madera y las chapas al perfil de Chapa
-  // al mismo tiempo, sin mezclarlas y respetando el precio de cada placa
-  window.d3SendCorte = function(){
-    saveCurrentIntoProfile();
-    const visible = (d3.pieces || []).filter(p => {
-      if (p.hw) return false;
-      if (p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod]) return false;
-      return !p._sent;
+  // -------------------------------------------------------------------------
+  // 3. PARSER INTELIGENTE DE LIBRETA ("3 tubos 20x20 6m, 5 tubos 30x30...")
+  // -------------------------------------------------------------------------
+  function parseNotebookText(rawText){
+    const results = [];
+    if (!rawText || !rawText.trim()) return results;
+
+    // Separar por saltos de línea, comas o punto y coma
+    const chunks = rawText
+      .replace(/\r/g, "\n")
+      .split(/[\n,;]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    for (const line of chunks){
+      const low = line.toLowerCase().replace(/×/g, "x");
+
+      // Cantidad inicial (ej: "3 tubos...", "5 caños...", "2 placas...")
+      const qtyMatch = low.match(/^(\d+(?:[.,]\d+)?)\s*/);
+      const qty = qtyMatch ? parseFloat(qtyMatch[1].replace(",", ".")) : 1;
+
+      // Caso 1: Tubos / Caños / Perfiles (ej: "3 tubos 20x20 6m" o "5 tubos 30x30")
+      const profMatch = low.match(/(\d{2,3})\s*x\s*(\d{2,3})/);
+      if (profMatch && (low.includes("tubo") || low.includes("caño") || low.includes("cano") || low.includes("perfil") || low.includes("estructural") || Number(profMatch[1]) <= 120)){
+        const dim = `${profMatch[1]}x${profMatch[2]}`;
+        // Buscar si especifica largo en metros (ej: "6m", "6 mts", "3.5m") o mm ("6000mm")
+        let unitLen = 6000;
+        const mMeters = low.replace(dim, "").match(/(\d+(?:[.,]\d+)?)\s*(?:m|mts|metros)\b/);
+        const mMm = low.replace(dim, "").match(/(\d{3,5})\s*mm\b/);
+        if (mMm) unitLen = parseInt(mMm[1], 10);
+        else if (mMeters) unitLen = Math.round(parseFloat(mMeters[1].replace(",", ".")) * 1000);
+
+        results.push({
+          kind: "perfil",
+          tag: dim,
+          name: `Caño estructural ${dim}`,
+          qty,
+          unitLen,
+          totalMm: Math.round(qty * unitLen),
+          summary: `${qty} barra(s) de ${dim} (${unitLen} mm c/u = ${(qty * unitLen / 1000).toFixed(1)} m)`
+        });
+        continue;
+      }
+
+      // Caso 2: Placas / Tableros de madera
+      if (low.includes("placa") || low.includes("tablero") || low.includes("madera") || low.includes("pino") || low.includes("eucalipto") || low.includes("paraiso") || low.includes("mdf") || low.includes("melamina")){
+        const woodType = low.includes("eucalipto") ? "eucalipto" : low.includes("paraiso") ? "paraiso" : low.includes("mdf") ? "mdf" : low.includes("melamina") ? "melamina" : "pino";
+        const thMatch = low.match(/(\d{1,2}(?:[.,]\d)?)\s*mm/);
+        const th = thMatch ? thMatch[1] + "mm" : "18mm";
+        const tag = `${woodType} ${th}`;
+        let unitM2 = 4.758; // 2600x1830 por defecto
+        if (profMatch && Number(profMatch[1]) >= 300){
+          unitM2 = (Number(profMatch[1]) * Number(profMatch[2])) / 1e6;
+        }
+        results.push({
+          kind: "madera",
+          tag,
+          name: `Tablero ${woodType.toUpperCase()} ${th}`,
+          qty,
+          unitM2,
+          totalM2: +(qty * unitM2).toFixed(3),
+          summary: `${qty} placa(s) de ${tag} (${(qty * unitM2).toFixed(2)} m²)`
+        });
+        continue;
+      }
+
+      // Caso 3: Chapas o Mallas
+      if (low.includes("chapa") || low.includes("malla") || low.includes("plancha")){
+        const isMesh = low.includes("malla");
+        const tag = isMesh ? "malla desplegada" : "chapa";
+        let unitM2 = 2.0; // 2000x1000 por defecto
+        if (profMatch && Number(profMatch[1]) >= 300){
+          unitM2 = (Number(profMatch[1]) * Number(profMatch[2])) / 1e6;
+        }
+        results.push({
+          kind: "chapa",
+          tag,
+          name: isMesh ? "Malla desplegada" : "Plancha de chapa",
+          qty,
+          unitM2,
+          totalM2: +(qty * unitM2).toFixed(3),
+          summary: `${qty} plancha(s) de ${tag} (${(qty * unitM2).toFixed(2)} m²)`
+        });
+        continue;
+      }
+
+      // Caso 4: Herrajes / Insumos directos
+      const cleanDesc = low.replace(/^(\d+(?:[.,]\d+)?)\s*/, "").trim() || "insumo";
+      results.push({
+        kind: "insumo",
+        tag: cleanDesc.slice(0, 20),
+        name: cleanDesc.charAt(0).toUpperCase() + cleanDesc.slice(1),
+        qty,
+        summary: `${qty} un. de ${cleanDesc}`
+      });
+    }
+    return results;
+  }
+
+  function renderParsedPreview(){
+    const text = document.getElementById("stkNotebookText").value;
+    parsedDraft = parseNotebookText(text);
+    const box = document.getElementById("stkParsedPreview");
+    if (!parsedDraft.length){
+      box.innerHTML = "";
+      return;
+    }
+    box.innerHTML = `<div style="padding:8px 10px;background:var(--accent-soft);border:1px solid var(--rule);border-radius:var(--r);font-size:13px">
+      <b>✅ Detectado para sumar al Stock (${parsedDraft.length}):</b>
+      <ul style="margin:6px 0 0;padding-left:18px">
+        ${parsedDraft.map(d => `<li><b>${esc(d.name)}</b> → ${esc(d.summary)} <span class="stk-tag ${d.kind}">${esc(d.tag)}</span></li>`).join("")}
+      </ul>
+    </div>`;
+  }
+
+  // OCR de Foto de Libreta (Gemini Vision si cargó API Key, o Tesseract.js gratuito en navegador)
+  async function processNotebookPhoto(file){
+    const statusEl = document.getElementById("stkOcrStatus");
+    const previewImg = document.getElementById("stkPhotoPreview");
+    const txtArea = document.getElementById("stkNotebookText");
+
+    const dataUrl = await new Promise((res) => {
+      const rd = new FileReader();
+      rd.onload = () => res(rd.result);
+      rd.readAsDataURL(file);
     });
+    previewImg.src = dataUrl;
+    previewImg.style.display = "block";
 
-    const woods  = visible.filter(p => p.kind === "madera");
-    const sheets = visible.filter(p => p.kind === "chapa" || p.kind === "plegada");
+    const geminiKey = (document.getElementById("stkGeminiKey")?.value || localStorage.getItem("taller_gemini_key") || "").trim();
 
-    if (!woods.length && !sheets.length){
-      if (typeof flag === "function") flag("Nada nuevo para mandar: tocá «Reenviar todo» si querés repetir");
+    if (geminiKey){
+      try {
+        localStorage.setItem("taller_gemini_key", geminiKey);
+        statusEl.textContent = "⏳ Leyendo caligrafía de la libreta con IA...";
+        const base64Data = dataUrl.split(",")[1];
+        const mimeType = file.type || "image/jpeg";
+        const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: "Transcribe exactamente la lista de materiales de taller anotados en esta foto de libreta. Devuelve solo las líneas separadas por coma, por ejemplo: 3 tubos 20x20 6m, 5 tubos 30x30, 2 placas pino 18mm" },
+                { inline_data: { mime_type: mimeType, data: base64Data } }
+              ]
+            }]
+          })
+        });
+        const json = await resp.json();
+        const extracted = json?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        if (extracted){
+          txtArea.value = extracted.trim();
+          statusEl.textContent = "✅ Foto de libreta leída con precisión IA.";
+          renderParsedPreview();
+          return;
+        }
+      } catch(e){
+        console.warn("Fallback a OCR local:", e);
+      }
+    }
+
+    // OCR Local Gratuito con Tesseract.js
+    try {
+      statusEl.textContent = "⏳ Ejecutando OCR en el navegador sobre la foto...";
+      if (!window.Tesseract){
+        await new Promise((res, rej) => {
+          const sc = document.createElement("script");
+          sc.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+          sc.onload = res; sc.onerror = rej;
+          document.head.appendChild(sc);
+        });
+      }
+      const { data: { text } } = await window.Tesseract.recognize(dataUrl, "spa");
+      txtArea.value = (text || "").trim();
+      statusEl.textContent = "✅ Texto extraído de la foto. Revisalo abajo y tocá «+ Sumar todo al Stock».";
+      renderParsedPreview();
+    } catch(err){
+      statusEl.textContent = "⚠️ No se pudo cargar el lector OCR. Escribí o dictá la nota en el cuadro de abajo.";
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 4. EXTRACCIÓN DE MATERIALES DE MUEBLES GUARDADOS Y DESCUENTO DE STOCK
+  // -------------------------------------------------------------------------
+  function getSavedFurnituresCatalog(){
+    const map = new Map();
+
+    // 1. Muebles del sistema unificado 3 en 1 (taller_full_book_v3)
+    try {
+      const full = JSON.parse(localStorage.getItem("taller_full_book_v3") || "{}");
+      Object.values(full).forEach(snap => {
+        if (snap && snap.name) map.set(snap.name.toLowerCase(), { name: snap.name, snap });
+      });
+    } catch(e){}
+
+    // 2. Muebles de Materiales (book.entries)
+    if (typeof book !== "undefined" && Array.isArray(book.entries)){
+      book.entries.forEach(e => {
+        if (e && e.name && !map.has(e.name.toLowerCase())){
+          map.set(e.name.toLowerCase(), { name: e.name, snap: { name: e.name, mat: e } });
+        }
+      });
+    }
+    return Array.from(map.values());
+  }
+
+  // Calcula cuánto material consume 1 unidad de un mueble guardado
+  function getRequirementsForFurniture(itemWrapper){
+    const reqs = []; // { kind, tag, label, needMm, needM2, needQty }
+    const snap = itemWrapper.snap || {};
+
+    const addReq = (kind, tagRaw, label, val) => {
+      const tag = normalizeTag(tagRaw);
+      const ex = reqs.find(r => r.kind === kind && r.tag === tag);
+      if (ex){
+        if (kind === "perfil") ex.needMm += val;
+        else if (kind === "madera" || kind === "chapa") ex.needM2 += val;
+        else ex.needQty += val;
+      } else {
+        reqs.push({
+          kind, tag, label: label || tag,
+          needMm: kind === "perfil" ? val : 0,
+          needM2: (kind === "madera" || kind === "chapa") ? val : 0,
+          needQty: kind === "insumo" ? val : 0
+        });
+      }
+    };
+
+    // A. Si tiene piezas 3D (más exacto para perfiles, maderas y chapas)
+    const d3Pieces = snap.d3 && Array.isArray(snap.d3.pieces) ? snap.d3.pieces : [];
+    const hideMods = (snap.d3 && snap.d3.hideMods) || {};
+    let hasProfsFrom3D = false, hasWoodFrom3D = false, hasSheetFrom3D = false;
+
+    for (const p of d3Pieces){
+      if (p.hw) continue;
+      if (p.mod && p.mod !== "base" && hideMods[p.mod]) continue;
+      if (p.kind === "perfil"){
+        hasProfsFrom3D = true;
+        const tag = normalizeTag(p.name, p.profId);
+        addReq("perfil", tag, `Caño ${tag}`, Number(p.len) || 0);
+      } else if (p.kind === "madera"){
+        hasWoodFrom3D = true;
+        const tag = `madera ${p.t || 18}mm`;
+        addReq("madera", tag, `Madera ${p.t || 18}mm`, ((Number(p.l)||0) * (Number(p.w)||0)) / 1e6);
+      } else if (p.kind === "chapa" || p.kind === "plegada"){
+        hasSheetFrom3D = true;
+        const area = p.kind === "plegada"
+          ? ((Number(p.devA)||0) * (Number(p.devB)||0)) / 1e6
+          : ((Number(p.l)||0) * (Number(p.w)||0)) / 1e6;
+        addReq("chapa", "chapa", `Chapa ${p.t || 1.2}mm`, area);
+      }
+    }
+
+    // B. Revisar ítems del Cotizador (mat.items) para barras no tomadas de 3D o herrajes/insumos
+    const matItems = snap.mat && Array.isArray(snap.mat.items) ? snap.mat.items : [];
+    for (const it of matItems){
+      if (it.kind === "barra" && !hasProfsFrom3D){
+        const tag = normalizeTag(it.name);
+        addReq("perfil", tag, it.name || `Perfil ${tag}`, Number(it.need) || 0);
+      } else if (it.kind === "tablero" && !hasWoodFrom3D && !it.fromCutMetal){
+        const area = ((Number(it.l)||0) * (Number(it.w)||0)) / 1e6;
+        if (area > 0) addReq("madera", "madera", it.name || "Tablero madera", area);
+      } else if (it.kind === "directo"){
+        addReq("insumo", it.name || "herraje", it.name || "Herraje", Number(it.unitQty) || 1);
+      }
+    }
+
+    return reqs;
+  }
+
+  function findStockMatch(req){
+    // Busca coincidencia exacta por tag o parcial dentro del mismo kind
+    return stock.items.find(s => s.kind === req.kind && (
+      normalizeTag(s.tag) === req.tag ||
+      normalizeTag(s.name).includes(req.tag) ||
+      req.tag.includes(normalizeTag(s.tag)) ||
+      (req.kind === "madera" && s.kind === "madera") ||
+      (req.kind === "chapa" && s.kind === "chapa")
+    ));
+  }
+
+  function renderProductionSimulator(){
+    const qBox = document.getElementById("stkProdQueue");
+    const simBox = document.getElementById("stkSimResult");
+    const btnProduce = document.getElementById("stkBtnProduce");
+
+    if (!prodQueue.length){
+      qBox.innerHTML = "";
+      simBox.innerHTML = "";
+      btnProduce.disabled = true;
       return;
     }
 
-    let addedW = 0, addedM = 0;
+    const catalog = getSavedFurnituresCatalog();
+    qBox.innerHTML = prodQueue.map((item, idx) => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--panel-2);border:1px solid var(--rule);border-radius:var(--r);margin-bottom:6px">
+        <span>🔨 <b>${item.qty} × ${esc(item.name)}</b></span>
+        <button type="button" class="x" data-rmqueue="${idx}" title="Quitar del lote">✕</button>
+      </div>
+    `).join("");
 
-    // Cargar maderas en el perfil de Madera
-    if (woods.length){
-      if (!profiles.wood) profiles.wood = defaultProfile("wood");
-      const pw = profiles.wood;
-      const thicks = new Set(woods.map(p => String(p.t)));
-      if (thicks.size === 1) pw.board.thick = +[...thicks][0];
-      for (const p of woods){
-        const ex = pw.pieces.find(q => q.from3d && q.name === p.name && q.l === p.l && q.w === p.w && !q.grain);
-        if (ex) ex.qty += 1;
-        else pw.pieces.push({ id: uid(), name: p.name, l: Math.round(p.l), w: Math.round(p.w), qty: 1, grain: false, from3d: true });
-        p._sent = true; addedW++;
+    // Acumular requerimientos de todo el lote
+    const totalReqs = [];
+    for (const qItem of prodQueue){
+      const found = catalog.find(c => c.name.toLowerCase() === qItem.name.toLowerCase());
+      if (!found) continue;
+      const unitReqs = getRequirementsForFurniture(found);
+      for (const r of unitReqs){
+        const ex = totalReqs.find(x => x.kind === r.kind && x.tag === r.tag);
+        if (ex){
+          ex.needMm  += r.needMm * qItem.qty;
+          ex.needM2  += r.needM2 * qItem.qty;
+          ex.needQty += r.needQty * qItem.qty;
+        } else {
+          totalReqs.push({
+            kind: r.kind, tag: r.tag, label: r.label,
+            needMm: r.needMm * qItem.qty,
+            needM2: r.needM2 * qItem.qty,
+            needQty: r.needQty * qItem.qty
+          });
+        }
       }
     }
 
-    // Cargar chapas y plegadas en el perfil de Chapa
-    if (sheets.length){
-      if (!profiles.metal) profiles.metal = defaultProfile("metal");
-      const pm = profiles.metal;
-      const thicks = new Set(sheets.map(p => String(p.t)));
-      if (thicks.size === 1) pm.board.thick = +[...thicks][0];
-      let bendsAdded = 0;
-      for (const p of sheets){
-        const l = Math.round(p.kind === "plegada" ? p.devA : p.l);
-        const w = Math.round(p.kind === "plegada" ? p.devB : p.w);
-        const nm = p.kind === "plegada" ? p.name + " — desarrollo" : p.name;
-        const ex = pm.pieces.find(q => q.from3d && q.name === nm && q.l === l && q.w === w);
-        if (ex) ex.qty += 1;
-        else pm.pieces.push({ id: uid(), name: nm, l, w, qty: 1, grain: false, from3d: true });
-        if (p.kind === "plegada") bendsAdded += p.bends || 0;
-        p._sent = true; addedM++;
+    if (!totalReqs.length){
+      simBox.innerHTML = `<div class="stk-sim-box"><span class="hint">Este mueble no tiene despiece de barras/placas cargado todavía.</span></div>`;
+      btnProduce.disabled = false;
+      return;
+    }
+
+    const linesHTML = totalReqs.map(req => {
+      const sItem = findStockMatch(req);
+      if (req.kind === "perfil"){
+        const haveMm = sItem ? (sItem.totalMm || 0) : 0;
+        const uLen = sItem ? (sItem.unitLen || 6000) : 6000;
+        const ok = haveMm >= req.needMm;
+        const barsEq = (req.needMm / uLen).toFixed(2);
+        return `<div class="stk-sim-line">
+          <span>🔩 <b>${esc(req.label)}</b> (${req.tag})</span>
+          <span class="${ok ? 'stk-ok' : 'stk-lack'}">
+            Usa ${(req.needMm/1000).toFixed(2)} m (${barsEq} barras) · Stock: ${(haveMm/1000).toFixed(2)} m ${ok ? '✓' : '⚠️ Faltan ' + ((req.needMm - haveMm)/1000).toFixed(2) + ' m'}
+          </span>
+        </div>`;
       }
-      if (bendsAdded){
-        pm.cut.bends = (pm.cut.bends || 0) + bendsAdded;
-        pm.cut.bends3d = (pm.cut.bends3d || 0) + bendsAdded;
+      if (req.kind === "madera" || req.kind === "chapa"){
+        const haveM2 = sItem ? (sItem.totalM2 || 0) : 0;
+        const ok = haveM2 >= req.needM2;
+        return `<div class="stk-sim-line">
+          <span>${req.kind === "madera" ? "🪵" : "⚙️"} <b>${esc(req.label)}</b></span>
+          <span class="${ok ? 'stk-ok' : 'stk-lack'}">
+            Usa ${req.needM2.toFixed(2)} m² · Stock: ${haveM2.toFixed(2)} m² ${ok ? '✓' : '⚠️ Faltan ' + (req.needM2 - haveM2).toFixed(2) + ' m²'}
+          </span>
+        </div>`;
       }
-    }
+      const haveQ = sItem ? (sItem.qty || 0) : 0;
+      const ok = haveQ >= req.needQty;
+      return `<div class="stk-sim-line">
+        <span>🧰 <b>${esc(req.label)}</b></span>
+        <span class="${ok ? 'stk-ok' : 'stk-lack'}">
+          Usa ${req.needQty} un. · Stock: ${haveQ} un. ${ok ? '✓' : '⚠️ Faltan ' + (req.needQty - haveQ) + ' un.'}
+        </span>
+      </div>`;
+    }).join("");
 
-    // Mostrar el perfil que tenga piezas recién enviadas (o mantener el activo)
-    const showKind = (addedW > 0 && addedM === 0) ? "wood"
-                   : (addedM > 0 && addedW === 0) ? "metal"
-                   : (profiles.active || "wood");
-    switchMaterialProfile(showKind, true);
-    if (typeof d3OutRender === "function") d3OutRender();
-    if (typeof d3Save === "function") d3Save();
-
-    const parts = [];
-    if (addedW) parts.push(`${addedW} de madera`);
-    if (addedM) parts.push(`${addedM} de chapa`);
-    if (typeof flag === "function"){
-      flag(`✅ Enviadas por separado: ${parts.join(" y ")} (cada material en su propio plano y precio)`);
-    }
-  };
-
-  // 4. Actualizar d3RecalcAllFrom3D para que limpie las piezas 3D de AMBOS perfiles
-  // sin borrar las piezas manuales ni pisar los precios de tablero/plancha
-  window.d3RecalcAllFrom3D = function(){
-    saveCurrentIntoProfile();
-    ["wood", "metal"].forEach(k => {
-      if (!profiles[k]) profiles[k] = defaultProfile(k);
-      profiles[k].pieces = (profiles[k].pieces || []).filter(p => !p.from3d);
-      profiles[k].cut.bends = Math.max(0, (profiles[k].cut.bends || 0) - (profiles[k].cut.bends3d || 0));
-      profiles[k].cut.bends3d = 0;
-    });
-
-    // Conservar en Materiales los ítems manuales y los que vienen del plano de corte con precio propio
-    mat.items = (mat.items || []).filter(it => !it.from3d || it.fromCutWood || it.fromCutMetal);
-
-    (d3.pieces || []).forEach(p => {
-      const hidden = p.mod && p.mod !== "base" && d3.hideMods && d3.hideMods[p.mod];
-      p._sent = !!(p.hw || hidden);
-    });
-
-    window.d3SendCorte();
-    if (typeof d3SendMat === "function") d3SendMat();
-
-    if (Array.isArray(d3.lastConsumables)){
-      d3.lastConsumables.forEach(c => {
-        if (c.mod && c.mod !== "base" && d3.hideMods && d3.hideMods[c.mod]) return;
-        mat.items.push(sanitizeMatItem(Object.assign({}, c, { from3d: true })));
-      });
-    }
-    save(); render(); saveMat(); renderMat();
-    renderDualSwitchBar();
-  };
-
-  // 5. Barra superior en Plano de Corte para alternar en 1 clic entre el Plan de Madera y el Plan de Chapa
-  function renderDualSwitchBar(){
-    const setupCol = document.querySelector("#viewCorte .setup");
-    if (!setupCol) return;
-    let bar = document.getElementById("dualCorteBar");
-    if (!bar){
-      bar = document.createElement("div");
-      bar.id = "dualCorteBar";
-      bar.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;padding:10px;background:var(--panel);border:1px solid var(--rule);border-radius:var(--r);box-shadow:var(--shadow)";
-      setupCol.prepend(bar);
-    }
-    const nW = (profiles.wood && Array.isArray(profiles.wood.pieces))
-      ? profiles.wood.pieces.reduce((s,p) => s + (p.qty || 1), 0) : 0;
-    const nM = (profiles.metal && Array.isArray(profiles.metal.pieces))
-      ? profiles.metal.pieces.reduce((s,p) => s + (p.qty || 1), 0) : 0;
-    const pW = profiles.wood && profiles.wood.board ? (profiles.wood.board.price || 0) : 0;
-    const pM = profiles.metal && profiles.metal.board ? (profiles.metal.board.price || 0) : 0;
-    const act = (state.cut && state.cut.material === "metal") ? "metal" : "wood";
-
-    bar.innerHTML = `
-      <button type="button" class="btn ${act === 'wood' ? 'primary' : 'quiet'}" data-switch-corte="wood" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px">
-        <span>🪵 <b>Plan de Madera (${nW} pz)</b></span>
-        <small style="font-size:11.5px;opacity:.85">${pW > 0 ? "$ " + f0.format(pW) + "/placa" : "Sin precio cargado"}</small>
-      </button>
-      <button type="button" class="btn ${act === 'metal' ? 'primary' : 'quiet'}" data-switch-corte="metal" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px">
-        <span>🔩 <b>Plan de Chapa (${nM} pz)</b></span>
-        <small style="font-size:11.5px;opacity:.85">${pM > 0 ? "$ " + f0.format(pM) + "/plancha" : "Sin precio cargado"}</small>
-      </button>
-    `;
+    simBox.innerHTML = `<div class="stk-sim-box">
+      <div style="font-size:12.5px;font-weight:700;margin-bottom:6px;text-transform:uppercase;color:var(--ink-2)">Descuento estimado de Stock:</div>
+      ${linesHTML}
+    </div>`;
+    btnProduce.disabled = false;
+    btnProduce._currentReqs = totalReqs;
   }
 
-  document.addEventListener("click", e => {
-    const btn = e.target.closest("[data-switch-corte]");
-    if (!btn) return;
-    switchMaterialProfile(btn.dataset.switchCorte, false);
+  function executeProductionDeduct(){
+    const btnProduce = document.getElementById("stkBtnProduce");
+    const totalReqs = btnProduce._currentReqs || [];
+    if (!prodQueue.length) return;
+
+    for (const req of totalReqs){
+      let sItem = findStockMatch(req);
+      if (!sItem){
+        // Crear el ítem en 0 si no existía para que quede registrado
+        addOrMergeStockItem({ kind: req.kind, tag: req.tag, name: req.label, qty: 0 });
+        sItem = findStockMatch(req);
+      }
+      if (!sItem) continue;
+      if (req.kind === "perfil"){
+        sItem.totalMm = Math.max(0, (sItem.totalMm || 0) - req.needMm);
+      } else if (req.kind === "madera" || req.kind === "chapa"){
+        sItem.totalM2 = Math.max(0, +((sItem.totalM2 || 0) - req.needM2).toFixed(3));
+      } else {
+        sItem.qty = Math.max(0, (sItem.qty || 0) - req.needQty);
+      }
+    }
+
+    stock.history.unshift({
+      id: "h_" + Date.now(),
+      date: new Date().toLocaleString("es-AR"),
+      summary: prodQueue.map(q => `${q.qty}× ${q.name}`).join(" + "),
+      reqs: totalReqs
+    });
+    stock.history = stock.history.slice(0, 40);
+    prodQueue = [];
+    saveStock();
+    renderStockAll();
+    if (typeof flag === "function") flag("🔨 Fabricación registrada: stock descontado (precios y cotizaciones intactos)");
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. RENDERIZADO GENERAL DE LA PESTAÑA STOCK
+  // -------------------------------------------------------------------------
+  function renderStockAll(){
+    // Llenar selector de muebles guardados
+    const sel = document.getElementById("stkFurnSelect");
+    const catalog = getSavedFurnituresCatalog();
+    if (sel){
+      sel.innerHTML = catalog.length
+        ? catalog.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("")
+        : `<option value="">(Guardá primero un mueble en 3 en 1 o Materiales)</option>`;
+    }
+
+    // Estadísticas rápidas
+    const nPerf = stock.items.filter(i => i.kind === "perfil").length;
+    const nMad  = stock.items.filter(i => i.kind === "madera").length;
+    const nCha  = stock.items.filter(i => i.kind === "chapa").length;
+    const lowCount = stock.items.filter(i => {
+      const units = i.kind === "perfil" ? (i.totalMm / (i.unitLen || 6000))
+                  : (i.kind === "madera" || i.kind === "chapa") ? (i.totalM2 / (i.unitM2 || 4.758))
+                  : i.qty;
+      return units <= (i.minUnits || 0);
+    }).length;
+
+    const statsEl = document.getElementById("stkSummaryStats");
+    if (statsEl){
+      statsEl.innerHTML =
+        `<span>Perfiles <b>${nPerf}</b></span>` +
+        `<span>Maderas <b>${nMad}</b></span>` +
+        `<span>Chapas <b>${nCha}</b></span>` +
+        (lowCount ? `<span style="color:var(--cut)">En mínimo <b>⚠️ ${lowCount}</b></span>` : "");
+    }
+
+    // Lista de materiales en stock
+    const listEl = document.getElementById("stkItemsList");
+    const filtered = stock.items.filter(i => activeFilter === "all" || i.kind === activeFilter);
+    if (!filtered.length){
+      listEl.innerHTML = `<p class="empty">No hay materiales en esta categoría. Cargalos con una foto de tu libreta o manualmente a la izquierda.</p>`;
+    } else {
+      listEl.innerHTML = filtered.map(it => {
+        let detailTxt = "", unitVal = 0, unitStep = "0.5", unitLabel = "barras";
+        if (it.kind === "perfil"){
+          const uLen = it.unitLen || 6000;
+          const fullBars = Math.floor((it.totalMm + 0.01) / uLen);
+          const remMm = Math.round(it.totalMm - fullBars * uLen);
+          unitVal = +(it.totalMm / uLen).toFixed(2);
+          unitLabel = `barras (${uLen/1000}m)`;
+          detailTxt = `Total: <b>${(it.totalMm/1000).toFixed(2)} m</b> (${mmv(it.totalMm)} mm) → <b>${fullBars} barra(s) entera(s)</b>` +
+                      (remMm > 0 ? ` + recorte de <b>${mmv(remMm)} mm</b>` : "");
+        } else if (it.kind === "madera" || it.kind === "chapa"){
+          const uM2 = it.unitM2 || 4.758;
+          unitVal = +(it.totalM2 / uM2).toFixed(2);
+          unitLabel = "placas";
+          detailTxt = `Superficie disponible: <b>${(it.totalM2 || 0).toFixed(2)} m²</b> (${unitVal} placas aprox.)`;
+        } else {
+          unitVal = it.qty || 0;
+          unitStep = "1";
+          unitLabel = "un.";
+          detailTxt = `Disponible en taller: <b>${unitVal} unidades</b>`;
+        }
+        const isLow = unitVal <= (it.minUnits || 0);
+        return `<div class="stk-row${isLow ? ' low' : ''}" data-stkid="${esc(it.id)}">
+          <span class="stk-tag ${it.kind}">${esc(it.tag)}</span>
+          <div>
+            <div style="font-weight:600;font-size:14.5px">${esc(it.name)} ${isLow ? '<span style="color:var(--cut);font-size:12px">⚠️ Stock bajo</span>' : ''}</div>
+            <div class="hint" style="margin-top:2px">${detailTxt}</div>
+          </div>
+          <div class="stk-qty-box">
+            <button type="button" class="btn quiet" data-stkadj="-1" style="padding:3px 8px">−</button>
+            <input type="number" data-stkset="${esc(it.id)}" value="${unitVal}" step="${unitStep}" min="0" aria-label="Cantidad en stock">
+            <span style="font-size:12px;color:var(--ink-2)">${unitLabel}</span>
+            <button type="button" class="btn quiet" data-stkadj="1" style="padding:3px 8px">+</button>
+          </div>
+          <button type="button" class="x" data-stkdel="${esc(it.id)}" title="Eliminar material del stock">✕</button>
+        </div>`;
+      }).join("");
+    }
+
+    // Historial
+    const histEl = document.getElementById("stkHistoryList");
+    document.getElementById("stkHistCount").textContent = stock.history.length ? `${stock.history.length} registros` : "";
+    if (!stock.history.length){
+      histEl.innerHTML = `<p class="empty">Todavía no registraste fabricaciones.</p>`;
+    } else {
+      histEl.innerHTML = stock.history.map(h => `
+        <div style="padding:8px 10px;border:1px solid var(--rule);border-radius:var(--r);background:var(--panel-2);margin-bottom:6px;font-size:13px">
+          <div style="display:flex;justify-content:space-between">
+            <b>🔨 ${esc(h.summary)}</b>
+            <span class="hint" style="margin:0">${esc(h.date)}</span>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    renderProductionSimulator();
+  }
+
+  // -------------------------------------------------------------------------
+  // 6. EVENTOS DE LA PESTAÑA DE STOCK Y NUBE SUPABASE
+  // -------------------------------------------------------------------------
+  document.getElementById("stkPhotoInp")?.addEventListener("change", e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) processNotebookPhoto(f);
   });
 
-  renderDualSwitchBar();
+  document.getElementById("stkBtnToggleAiKey")?.addEventListener("click", () => {
+    const box = document.getElementById("stkAiKeyBox");
+    box.hidden = !box.hidden;
+    const saved = localStorage.getItem("taller_gemini_key") || "";
+    if (saved) document.getElementById("stkGeminiKey").value = saved;
+  });
+
+  document.getElementById("stkNotebookText")?.addEventListener("input", renderParsedPreview);
+  document.getElementById("stkBtnParse")?.addEventListener("click", renderParsedPreview);
+
+  document.getElementById("stkBtnCommitNotes")?.addEventListener("click", () => {
+    renderParsedPreview();
+    if (!parsedDraft.length){
+      if (typeof flag === "function") flag("⚠️ Escribí una nota o subí una foto de tu libreta primero");
+      return;
+    }
+    parsedDraft.forEach(d => addOrMergeStockItem(d));
+    document.getElementById("stkNotebookText").value = "";
+    document.getElementById("stkParsedPreview").innerHTML = "";
+    if (typeof flag === "function") flag(`✅ Se sumaron ${parsedDraft.length} materiales de tu libreta al Stock`);
+    parsedDraft = [];
+  });
+
+  document.getElementById("stkBtnAddManual")?.addEventListener("click", () => {
+    const kind = document.getElementById("stkKind").value;
+    const tag  = document.getElementById("stkTagCode").value.trim() || "20x20";
+    const name = document.getElementById("stkName").value.trim() || `${kind.toUpperCase()} ${tag}`;
+    const uLen = Number(document.getElementById("stkUnitLen").value) || 6000;
+    const qty  = Number(document.getElementById("stkQty").value) || 1;
+    const minU = Number(document.getElementById("stkMin").value) || 1;
+    addOrMergeStockItem({ kind, tag, name, unitLen: uLen, qty, minUnits: minU });
+    document.getElementById("stkTagCode").value = "";
+    document.getElementById("stkName").value = "";
+    if (typeof flag === "function") flag("📦 Material sumado al Stock");
+  });
+
+  document.getElementById("stkFilterChips")?.addEventListener("click", e => {
+    const b = e.target.closest("[data-sflt]");
+    if (!b) return;
+    activeFilter = b.dataset.sflt;
+    document.querySelectorAll("#stkFilterChips .chip").forEach(c => c.setAttribute("aria-pressed", String(c === b)));
+    renderStockAll();
+  });
+
+  document.getElementById("stkItemsList")?.addEventListener("click", e => {
+    const row = e.target.closest("[data-stkid]");
+    if (!row) return;
+    const it = stock.items.find(x => x.id === row.dataset.stkid);
+    if (!it) return;
+
+    const del = e.target.closest("[data-stkdel]");
+    if (del){
+      stock.items = stock.items.filter(x => x.id !== it.id);
+      saveStock(); renderStockAll();
+      return;
+    }
+    const adj = e.target.closest("[data-stkadj]");
+    if (adj){
+      const delta = Number(adj.dataset.stkadj);
+      if (it.kind === "perfil") it.totalMm = Math.max(0, (it.totalMm || 0) + delta * (it.unitLen || 6000));
+      else if (it.kind === "madera" || it.kind === "chapa") it.totalM2 = Math.max(0, +((it.totalM2 || 0) + delta * (it.unitM2 || 4.758)).toFixed(3));
+      else it.qty = Math.max(0, (it.qty || 0) + delta);
+      saveStock(); renderStockAll();
+    }
+  });
+
+  document.getElementById("stkItemsList")?.addEventListener("change", e => {
+    const inp = e.target.closest("[data-stkset]");
+    if (!inp) return;
+    const it = stock.items.find(x => x.id === inp.dataset.stkset);
+    if (!it) return;
+    const val = Math.max(0, parseFloat(inp.value) || 0);
+    if (it.kind === "perfil") it.totalMm = Math.round(val * (it.unitLen || 6000));
+    else if (it.kind === "madera" || it.kind === "chapa") it.totalM2 = +(val * (it.unitM2 || 4.758)).toFixed(3);
+    else it.qty = val;
+    saveStock(); renderStockAll();
+  });
+
+  document.getElementById("stkBtnAddQueue")?.addEventListener("click", () => {
+    const name = document.getElementById("stkFurnSelect")?.value;
+    const qty  = Math.max(1, parseInt(document.getElementById("stkFurnQty")?.value, 10) || 1);
+    if (!name){
+      if (typeof flag === "function") flag("⚠️ Guardá primero un mueble para poder fabricarlo");
+      return;
+    }
+    const ex = prodQueue.find(q => q.name === name);
+    if (ex) ex.qty += qty;
+    else prodQueue.push({ name, qty });
+    renderProductionSimulator();
+  });
+
+  document.getElementById("stkProdQueue")?.addEventListener("click", e => {
+    const rm = e.target.closest("[data-rmqueue]");
+    if (!rm) return;
+    prodQueue.splice(Number(rm.dataset.rmqueue), 1);
+    renderProductionSimulator();
+  });
+
+  document.getElementById("stkBtnProduce")?.addEventListener("click", executeProductionDeduct);
+
+  // Sincronización opcional con tu Supabase (tabla stock_taller)
+  document.getElementById("btnStkSyncPush")?.addEventListener("click", async () => {
+    try {
+      const r = await fetch(`${SUPA_URL}/rest/v1/stock_taller`, {
+        method: "POST",
+        headers: {
+          "apikey": SUPA_KEY,
+          "Authorization": `Bearer ${SUPA_KEY}`,
+          "Content-Type": "application/json",
+          "Prefer": "resolution=merge-duplicates"
+        },
+        body: JSON.stringify({ id: "taller_principal", data: stock, updated_at: new Date().toISOString() })
+      });
+      if (!r.ok) throw new Error("Creá la tabla stock_taller en SQL Editor primero");
+      if (typeof flag === "function") flag("☁️ Stock subido a Supabase correctamente");
+    } catch(err){
+      if (typeof flag === "function") flag("⚠️ Para usar la nube, ejecutá primero el SQL de stock_taller en Supabase");
+    }
+  });
+
+  document.getElementById("btnStkSyncPull")?.addEventListener("click", async () => {
+    try {
+      const r = await fetch(`${SUPA_URL}/rest/v1/stock_taller?id=eq.taller_principal&select=data`, {
+        headers: { "apikey": SUPA_KEY, "Authorization": `Bearer ${SUPA_KEY}` }
+      });
+      const arr = await r.json();
+      if (Array.isArray(arr) && arr[0]?.data){
+        stock = arr[0].data;
+        saveStock(); renderStockAll();
+        if (typeof flag === "function") flag("☁️ Stock actualizado desde Supabase");
+      }
+    } catch(err){
+      if (typeof flag === "function") flag("⚠️ No se pudo conectar con la tabla stock_taller");
+    }
+  });
+
+  renderStockAll();
 })();
 </script>
 </body>
